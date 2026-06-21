@@ -1,65 +1,117 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
+import { CartView } from "@/components/CartView";
+import { SearchView } from "@/components/SearchView";
+import { NavBar } from "@/components/NavBar";
+import { SyncBanner } from "@/components/SyncBanner";
+
+type Screen = "cart" | "scan" | "search";
+
+const STORAGE_KEY = "aldi_cart_id";
+
+// Lazy-load the scanner only when the user actually opens the Scan tab.
+// SSR is disabled because the scanner uses browser-only APIs (getUserMedia,
+// MediaStreamTrack.applyConstraints) that don't exist on the server.
+const Scanner = dynamic(
+  () => import("@/components/Scanner").then((m) => m.Scanner),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex-1 flex items-center justify-center bg-black text-white/60 text-sm">
+        Loading camera…
+      </div>
+    ),
+  },
+);
 
 export default function Home() {
+  const [screen, setScreen] = useState<Screen>("cart");
+  const [cartId, setCartId] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Adopt a shared cart from the URL on first load (?cart=<id>).
+  // Lets the user share a cart across devices via QR code or link.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shared = params.get("cart");
+    if (shared) {
+      setCartId(shared);
+      localStorage.setItem(STORAGE_KEY, shared);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
+
+  // Ensure we have a cartId (create one if not). Runs on mount and on
+  // failure (if the saved cart is gone, we get a new one).
+  useEffect(() => {
+    let cancelled = false;
+    async function ensure() {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        // Verify the stored cart still exists server-side.
+        try {
+          const res = await fetch(`/api/cart/${stored}`);
+          if (res.ok) {
+            if (!cancelled) setCartId(stored);
+            return;
+          }
+        } catch {
+          /* network error — keep the id and try again next time */
+        }
+        if (!cancelled) setCartId(stored);
+        return;
+      }
+      try {
+        const res = await fetch("/api/cart", { method: "POST" });
+        if (!res.ok) return;
+        const { cartId: id } = await res.json();
+        localStorage.setItem(STORAGE_KEY, id);
+        if (!cancelled) setCartId(id);
+      } catch {
+        /* offline — try again later */
+      }
+    }
+    ensure();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Pass refreshKey to child views so they re-fetch when the cart changes.
+  const bump = useCallback(() => setRefreshKey((k) => k + 1), []);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <>
+      <header className="bg-aldi-blue text-white safe-top shadow-md">
+        <div className="max-w-2xl mx-auto px-4 py-3 flex items-baseline justify-between">
+          <div className="flex items-baseline gap-2">
+            <span className="font-black text-2xl tracking-tight">ALDI</span>
+            <span className="text-sm font-medium opacity-90">Shopping Cart</span>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+      </header>
+
+      <main className="flex-1 flex flex-col max-w-2xl w-full mx-auto pb-20">
+        <SyncBanner />
+        {screen === "cart" && (
+          <CartView cartId={cartId} refreshKey={refreshKey} onChange={bump} />
+        )}
+        {screen === "scan" && (
+          <Scanner
+            cartId={cartId}
+            onScanned={() => {
+              bump();
+              setScreen("cart");
+            }}
+            onCancel={() => setScreen("cart")}
+          />
+        )}
+        {screen === "search" && (
+          <SearchView cartId={cartId} onAdded={() => { bump(); setScreen("cart"); }} />
+        )}
       </main>
-    </div>
+
+      <NavBar current={screen} onChange={setScreen} />
+    </>
   );
 }

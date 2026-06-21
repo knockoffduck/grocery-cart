@@ -1,26 +1,94 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/* Aldi brand: deep blue + orange + white */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-aldi-blue: #0019a5;
+  --color-aldi-blue-dark: #001580;
+  --color-aldi-blue-light: #1a32b8;
+  --color-aldi-orange: #f37920;
+  --color-aldi-yellow: #ffe000;
+  --color-aldi-bg: #f7f8fa;
+  --color-aldi-surface: #ffffff;
+  --color-aldi-text: #0f172a;
+  --color-aldi-text-muted: #64748b;
+  --color-aldi-border: #e2e8f0;
+  --color-aldi-success: #16a34a;
+  --color-aldi-danger: #dc2626;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root {
+  --background: var(--color-aldi-bg);
+  --foreground: var(--color-aldi-text);
 }
 
-body {
+html, body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* iOS safe areas for the notched iPhone */
+.safe-top { padding-top: env(safe-area-inset-top, 0); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0); }
+
+/* Hide scrollbar but keep scrollable */
+.scrollbar-hidden { scrollbar-width: none; }
+.scrollbar-hidden::-webkit-scrollbar { display: none; }
+
+/* Camera viewport — needs a black background to absorb the unrendered
+   area around the camera feed before the video element fills it. */
+.reader {
+  background: #000;
+  position: relative;
+  overflow: hidden;
+}
+
+.reader video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Animated reticle corners */
+.scan-reticle {
+  position: absolute;
+  inset: 12% 8%;
+  pointer-events: none;
+}
+.scan-reticle::before,
+.scan-reticle::after,
+.scan-reticle > .corner-tl,
+.scan-reticle > .corner-tr,
+.scan-reticle > .corner-bl,
+.scan-reticle > .corner-br {
+  content: "";
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  border-color: rgba(255, 255, 255, 0.85);
+  border-style: solid;
+  border-width: 0;
+  transition: border-color 200ms ease, transform 200ms ease;
+}
+.scan-reticle > .corner-tl { top: 0; left: 0; border-top-width: 3px; border-left-width: 3px; border-top-left-radius: 6px; }
+.scan-reticle > .corner-tr { top: 0; right: 0; border-top-width: 3px; border-right-width: 3px; border-top-right-radius: 6px; }
+.scan-reticle > .corner-bl { bottom: 0; left: 0; border-bottom-width: 3px; border-left-width: 3px; border-bottom-left-radius: 6px; }
+.scan-reticle > .corner-br { bottom: 0; right: 0; border-bottom-width: 3px; border-right-width: 3px; border-bottom-right-radius: 6px; }
+.scan-reticle.success > * { border-color: #16a34a; }
+
+/* Green flash overlay on successful scan */
+.scan-flash {
+  position: absolute;
+  inset: 0;
+  background: #16a34a;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0s;
+}
+.scan-flash.active {
+  opacity: 0.35;
+  transition: opacity 0s;
 }
