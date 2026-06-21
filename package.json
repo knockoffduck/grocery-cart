@@ -9,6 +9,7 @@
     "start": "next start",
     "start:https": "NODE_ENV=production tsx server.ts",
     "lint": "eslint",
+    "postinstall": "bash scripts/copy-wasm.sh",
     "sync:aldi": "tsx --env-file-if-exists=.env scripts/sync-aldi.ts",
     "sync:off": "tsx --env-file-if-exists=.env scripts/sync-off.ts",
     "match": "tsx --env-file-if-exists=.env scripts/match.ts",
