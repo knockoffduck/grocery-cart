@@ -26,7 +26,26 @@ html, body {
   color: var(--foreground);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
+}
+
+/* Kill the 300ms tap delay on any element that handles taps. iOS Safari
+   should already do this since iOS 13, but the meta user-scalable=no +
+   fixed nav setup has been flaky in the past. */
+button, [role="button"], a, input, select, textarea {
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+}
+
+/* Make sure no element is invisibly blocking pointer events. The SyncBanner
+   "Checking catalogue…" placeholder is just text but anything that follows
+   it inherits the same flex column. Explicitly mark interactive nodes. */
+button {
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* iOS safe areas for the notched iPhone */
