@@ -3,7 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 
-const API = 'http://localhost:7777/api';
+const API = 'http://localhost:3000/api';
 
 // Minimal localStorage shim
 const _ls = {};
@@ -111,6 +111,33 @@ function test(name, fn) {
   }));
 
   await Promise.all(tests3);
+
+  const tests4 = [];
+  console.log('\n=== Catalogue offline dump ===');
+  const status = await api('/catalogue/status');
+  tests4.push(test('catalogue/status reports counts', async () => {
+    assert.ok(status.product_count > 3000);
+    assert.ok(status.ean_count > 1000);
+  }));
+  console.log(`  ${status.product_count} products, ${status.ean_count} EANs, last_sync=${status.last_sync}`);
+
+  const dump = await api('/catalogue/dump');
+  tests4.push(test('catalogue/dump returns full product list', async () => {
+    assert.equal(dump.products.length, status.product_count);
+  }));
+  tests4.push(test('catalogue/dump EAN map has right count', async () => {
+    const parsed = dump.ean_map.split(';').filter(Boolean);
+    assert.equal(parsed.length, status.ean_count);
+    for (const pair of parsed.slice(0, 5)) {
+      assert.ok(pair.includes(','), `pair ${pair} has no comma`);
+    }
+  }));
+  tests4.push(test('catalogue/dump products have priceDisplay', async () => {
+    const withPrice = dump.products.filter((p) => p.priceDisplay);
+    assert.ok(withPrice.length > 1000, `expected most products to have priceDisplay, got ${withPrice.length}/${dump.products.length}`);
+  }));
+
+  await Promise.all(tests4);
   console.log(`\n${pass} pass, ${fail} fail`);
   process.exit(fail > 0 ? 1 : 0);
 })();
