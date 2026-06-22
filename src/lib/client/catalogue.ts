@@ -123,7 +123,7 @@ export async function isCacheStale(): Promise<{ stale: boolean; reason: string }
   let server: CatalogueStatus;
   try {
     server = await fetchServerStatus();
-  } catch (e) {
+  } catch {
     // If we can't reach the server, assume the cache is fine.
     return { stale: false, reason: "offline" };
   }

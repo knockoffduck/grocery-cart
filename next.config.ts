@@ -27,6 +27,10 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          // The PWA only needs camera (scanner) and geolocation (optional).
+          // Disable everything else to reduce the browser attack surface.
+          // CSP is intentionally omitted — see README for rationale.
+          { key: "Permissions-Policy", value: "camera=(self), geolocation=(self), microphone=(), payment=(), usb=(), midi=()" },
           // The PWA is a single-page app; HSTS is only useful if we're
           // committed to HTTPS. Dokploy terminates TLS in front of the
           // container via Traefik, so HSTS at the app layer is redundant

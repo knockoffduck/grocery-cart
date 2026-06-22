@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { sql } from '@/lib/db';
 import { formatProduct, pickOff } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
@@ -10,12 +10,12 @@ export async function GET(_request: NextRequest, ctx: RouteContext<'/api/ean/[ea
   const { ean } = await ctx.params;
 
   // 1. User-created manual match wins over everything (highest confidence).
-  const manual = db.prepare(`
+  const [manual] = await sql<any[]>`
     SELECT ap.*, mm.created_at AS matched_at
     FROM manual_matches mm
     JOIN aldi_products ap ON ap.sku = mm.aldi_sku
-    WHERE mm.ean = ?
-  `).get(ean);
+    WHERE mm.ean = ${ean}
+  `;
   if (manual) {
     return NextResponse.json({
       matched: true,
@@ -27,7 +27,7 @@ export async function GET(_request: NextRequest, ctx: RouteContext<'/api/ean/[ea
   }
 
   // 2. Otherwise, try OFF + fuzzy match.
-  const off = db.prepare('SELECT * FROM off_products WHERE ean = ?').get(ean);
+  const [off] = await sql`SELECT * FROM off_products WHERE ean = ${ean}`;
   if (!off) {
     return NextResponse.json({
       matched: false,
@@ -37,14 +37,14 @@ export async function GET(_request: NextRequest, ctx: RouteContext<'/api/ean/[ea
     });
   }
 
-  const matches = db.prepare(`
+  const matches = await sql<any[]>`
     SELECT e2a.score, e2a.method, ap.*
     FROM ean_to_aldi e2a
     JOIN aldi_products ap ON ap.sku = e2a.aldi_sku
-    WHERE e2a.ean = ?
+    WHERE e2a.ean = ${ean}
     ORDER BY e2a.score DESC
     LIMIT 5
-  `).all(ean) as any[];
+  `;
 
   if (!matches.length) {
     return NextResponse.json({

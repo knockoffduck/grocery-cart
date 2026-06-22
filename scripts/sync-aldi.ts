@@ -1,41 +1,13 @@
-// One-shot sync of the full Aldi catalogue into SQLite.
-// Run: npx tsx src/sync-aldi.ts
-// Idempotent: REPLACES rows in place using sku as PK.
+// One-shot sync of the full Aldi catalogue into PostgreSQL.
+// Run: npm run sync:aldi
+// Idempotent: UPSERTs rows in place using sku as PK.
 
-import { db, setMeta } from '../src/lib/db.js';
+import { sql, setMeta, tx } from '../src/lib/db.js';
 import { searchProducts, pickPrimaryImage, type AldiProduct } from '../src/lib/aldi.js';
 
 const CONCURRENCY = 4;       // parallel in-flight requests
 const BATCH_SIZE = 60;       // max page size Aldi accepts
 const MAX_RETRIES = 4;
-
-const insert = db.prepare(`
-  INSERT INTO aldi_products
-    (sku, name, brand_name, slug, selling_size, price_cents, price_comparison_cents,
-     price_comparison_display, currency, categories_json, primary_image, assets_json,
-     not_for_sale, discontinued, weight_type, raw_json, synced_at)
-  VALUES
-    (@sku, @name, @brand_name, @slug, @selling_size, @price_cents, @price_comparison_cents,
-     @price_comparison_display, @currency, @categories_json, @primary_image, @assets_json,
-     @not_for_sale, @discontinued, @weight_type, @raw_json, datetime('now'))
-  ON CONFLICT(sku) DO UPDATE SET
-    name = excluded.name,
-    brand_name = excluded.brand_name,
-    slug = excluded.slug,
-    selling_size = excluded.selling_size,
-    price_cents = excluded.price_cents,
-    price_comparison_cents = excluded.price_comparison_cents,
-    price_comparison_display = excluded.price_comparison_display,
-    currency = excluded.currency,
-    categories_json = excluded.categories_json,
-    primary_image = excluded.primary_image,
-    assets_json = excluded.assets_json,
-    not_for_sale = excluded.not_for_sale,
-    discontinued = excluded.discontinued,
-    weight_type = excluded.weight_type,
-    raw_json = excluded.raw_json,
-    synced_at = datetime('now')
-`);
 
 function toRow(p: AldiProduct) {
   return {
@@ -57,6 +29,39 @@ function toRow(p: AldiProduct) {
     raw_json: JSON.stringify(p),
   };
 }
+
+const insert = async (row: ReturnType<typeof toRow>) => {
+  await sql`
+    INSERT INTO aldi_products
+      (sku, name, brand_name, slug, selling_size, price_cents, price_comparison_cents,
+       price_comparison_display, currency, categories_json, primary_image, assets_json,
+       not_for_sale, discontinued, weight_type, raw_json, synced_at)
+    VALUES
+      (${row.sku}, ${row.name}, ${row.brand_name}, ${row.slug}, ${row.selling_size},
+       ${row.price_cents}, ${row.price_comparison_cents},
+       ${row.price_comparison_display}, ${row.currency}, ${row.categories_json},
+       ${row.primary_image}, ${row.assets_json},
+       ${row.not_for_sale}, ${row.discontinued}, ${row.weight_type}, ${row.raw_json},
+       NOW())
+    ON CONFLICT (sku) DO UPDATE SET
+      name = EXCLUDED.name,
+      brand_name = EXCLUDED.brand_name,
+      slug = EXCLUDED.slug,
+      selling_size = EXCLUDED.selling_size,
+      price_cents = EXCLUDED.price_cents,
+      price_comparison_cents = EXCLUDED.price_comparison_cents,
+      price_comparison_display = EXCLUDED.price_comparison_display,
+      currency = EXCLUDED.currency,
+      categories_json = EXCLUDED.categories_json,
+      primary_image = EXCLUDED.primary_image,
+      assets_json = EXCLUDED.assets_json,
+      not_for_sale = EXCLUDED.not_for_sale,
+      discontinued = EXCLUDED.discontinued,
+      weight_type = EXCLUDED.weight_type,
+      raw_json = EXCLUDED.raw_json,
+      synced_at = NOW()
+  `;
+};
 
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   let lastErr: unknown;
@@ -92,9 +97,11 @@ export async function syncAldi(): Promise<{ total: number; pages: number; elapse
   console.log(`[aldi-sync] total products: ${total} across ${totalPages} pages`);
 
   let processed = 0;
-  const writeMany = db.transaction((rows: ReturnType<typeof toRow>[]) => {
-    for (const r of rows) insert.run(r);
-  });
+  const writeMany = async (rows: ReturnType<typeof toRow>[]) => {
+    await tx(async (s) => {
+      for (const r of rows) await insert(r);
+    });
+  };
 
   // Workers pull offsets from a shared cursor
   let nextOffset = BATCH_SIZE;
@@ -102,7 +109,7 @@ export async function syncAldi(): Promise<{ total: number; pages: number; elapse
   for (let o = BATCH_SIZE; o < total; o += BATCH_SIZE) offsets.push(o);
 
   // Seed the first page immediately
-  writeMany(first.items.map(toRow));
+  await writeMany(first.items.map(toRow));
   processed += first.items.length;
   console.log(`[aldi-sync] page 1/${totalPages} -> ${first.items.length} items`);
 
@@ -113,7 +120,7 @@ export async function syncAldi(): Promise<{ total: number; pages: number; elapse
       const offset = queue.shift();
       if (offset === undefined) return;
       const { items } = await fetchPage(offset);
-      writeMany(items.map(toRow));
+      await writeMany(items.map(toRow));
       processed += items.length;
       if (processed % 300 < BATCH_SIZE) {
         const pct = ((processed / total) * 100).toFixed(1);
@@ -123,8 +130,8 @@ export async function syncAldi(): Promise<{ total: number; pages: number; elapse
   });
   await Promise.all(workers);
 
-  setMeta('aldi_sync_completed_at', new Date().toISOString());
-  setMeta('aldi_sync_total', String(processed));
+  await setMeta('aldi_sync_completed_at', new Date().toISOString());
+  await setMeta('aldi_sync_total', String(processed));
   const elapsedMs = Date.now() - start;
   console.log(`[aldi-sync] done: ${processed} products in ${(elapsedMs / 1000).toFixed(1)}s`);
   return { total: processed, pages: totalPages, elapsedMs };

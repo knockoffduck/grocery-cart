@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { db } from '@/lib/db';
+import { sql } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +9,6 @@ export const dynamic = 'force-dynamic';
 // localStorage and reuses it on every page load.
 export async function POST() {
   const id = randomUUID();
-  db.prepare('INSERT INTO carts (id) VALUES (?)').run(id);
-  return NextResponse.json({ cartId: id });
+  await sql`INSERT INTO carts (id) VALUES (${id})`;
+  return NextResponse.json({ cartId: id }, { headers: { 'Cache-Control': 'no-store' } });
 }

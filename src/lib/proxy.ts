@@ -9,7 +9,6 @@ import { resolve } from 'node:path';
 type ProxyEntry = { ip: string; port: number; user: string; pass: string; url: string };
 
 let POOL: ProxyEntry[] = [];
-let cursor = 0;
 let disable = process.env.ALDI_PROXY === 'off';
 
 // Pool sources, tried in order:
@@ -91,12 +90,6 @@ function getDispatcher(url: string): ProxyAgent {
 
 // Round-robin index with per-host sharding so we don't burn through IPs faster than needed
 const hostCounters = new Map<string, number>();
-function nextProxy(host: string): ProxyEntry | null {
-  if (disable || POOL.length === 0) return null;
-  const i = (hostCounters.get(host) ?? 0) % POOL.length;
-  hostCounters.set(host, i + 1);
-  return POOL[i];
-}
 
 export function setProxyEnabled(enabled: boolean) {
   disable = !enabled;

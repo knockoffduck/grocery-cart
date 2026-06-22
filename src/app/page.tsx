@@ -11,6 +11,10 @@ type Screen = "cart" | "scan" | "search";
 
 const STORAGE_KEY = "aldi_cart_id";
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (s: string | null | undefined): s is string =>
+  !!s && UUID_RE.test(s);
+
 // Lazy-load the scanner only when the user actually opens the Scan tab.
 // SSR is disabled because the scanner uses browser-only APIs (getUserMedia,
 // MediaStreamTrack.applyConstraints) that don't exist on the server.
@@ -36,7 +40,7 @@ export default function Home() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const shared = params.get("cart");
-    if (shared) {
+    if (isUuid(shared)) {
       setCartId(shared);
       localStorage.setItem(STORAGE_KEY, shared);
       window.history.replaceState(null, "", window.location.pathname);
@@ -49,28 +53,32 @@ export default function Home() {
     let cancelled = false;
     async function ensure() {
       const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        // Verify the stored cart still exists server-side.
+      if (isUuid(stored)) {
         try {
           const res = await fetch(`/api/cart/${stored}`);
           if (res.ok) {
             if (!cancelled) setCartId(stored);
             return;
           }
+          // Cart no longer exists server-side. Clear it and create a new one.
+          localStorage.removeItem(STORAGE_KEY);
         } catch {
-          /* network error — keep the id and try again next time */
+          // Network error — keep the id and try again next time.
+          if (!cancelled) setCartId(stored);
+          return;
         }
-        if (!cancelled) setCartId(stored);
-        return;
       }
+      // No valid stored id, or stored id was stale. Create a new cart.
       try {
         const res = await fetch("/api/cart", { method: "POST" });
         if (!res.ok) return;
         const { cartId: id } = await res.json();
-        localStorage.setItem(STORAGE_KEY, id);
-        if (!cancelled) setCartId(id);
+        if (isUuid(id)) {
+          localStorage.setItem(STORAGE_KEY, id);
+          if (!cancelled) setCartId(id);
+        }
       } catch {
-        /* offline — try again later */
+        // offline — try again later
       }
     }
     ensure();

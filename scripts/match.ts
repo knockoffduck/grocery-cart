@@ -9,7 +9,7 @@
 //
 // Idempotent: clears ean_to_aldi and rebuilds on each run.
 
-import { db, setMeta } from '../src/lib/db.js';
+import { sql, setMeta, tx } from '../src/lib/db.js';
 
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'with', 'of', 'for', 'in', 'on', 'at',
@@ -84,8 +84,8 @@ type AldiRow = { sku: string; name: string; brand_name: string | null; selling_s
 
 console.log('[match] starting OFF->Aldi matcher');
 
-const off = db.prepare('SELECT ean, product_name, brand, quantity FROM off_products').all() as OffRow[];
-const aldi = db.prepare('SELECT sku, name, brand_name, selling_size FROM aldi_products').all() as AldiRow[];
+const off = (await sql`SELECT ean, product_name, brand, quantity FROM off_products`) as OffRow[];
+const aldi = (await sql`SELECT sku, name, brand_name, selling_size FROM aldi_products`) as AldiRow[];
 
 console.log(`[match] OFF rows: ${off.length}, Aldi rows: ${aldi.length}`);
 
@@ -99,16 +99,14 @@ for (const a of aldi) {
   aldiByBrandKey.set(key, arr);
 }
 
-const insert = db.prepare(`
-  INSERT INTO ean_to_aldi (ean, aldi_sku, score, method) VALUES (?, ?, ?, ?)
-  ON CONFLICT(ean, aldi_sku) DO UPDATE SET score = excluded.score, method = excluded.method
-`);
-
-const clear = db.prepare('DELETE FROM ean_to_aldi');
-const insertMany = db.transaction((rows: [string, string, number, string][]) => {
-  clear.run();
-  for (const r of rows) insert.run(...r);
-});
+const insertMany = async (rows: [string, string, number, string][]) => {
+  await tx(async (s) => {
+    await s`DELETE FROM ean_to_aldi`;
+    for (const r of rows) {
+      await s`INSERT INTO ean_to_aldi (ean, aldi_sku, score, method) VALUES (${r[0]}, ${r[1]}, ${r[2]}, ${r[3]}) ON CONFLICT (ean, aldi_sku) DO UPDATE SET score = EXCLUDED.score, method = EXCLUDED.method`;
+    }
+  });
+};
 
 const start = Date.now();
 const matches: [string, string, number, string][] = [];
@@ -155,25 +153,25 @@ for (const o of off) {
   }
 }
 
-insertMany(matches);
-setMeta('match_completed_at', new Date().toISOString());
-setMeta('match_total', String(matches.length));
-setMeta('match_exact', String(exact));
-setMeta('match_fuzzy', String(fuzzy));
-setMeta('match_unmatched', String(noMatch));
+await insertMany(matches);
+await setMeta('match_completed_at', new Date().toISOString());
+await setMeta('match_total', String(matches.length));
+await setMeta('match_exact', String(exact));
+await setMeta('match_fuzzy', String(fuzzy));
+await setMeta('match_unmatched', String(noMatch));
 
 const elapsedMs = Date.now() - start;
 console.log(`[match] done in ${(elapsedMs / 1000).toFixed(1)}s`);
 console.log(`[match] ${matches.length} EANs matched (${exact} exact, ${fuzzy} fuzzy), ${noMatch} unmatched`);
 
 // Show some examples
-const sample = db.prepare(`
+const sample = await sql`
   SELECT e2a.ean, e2a.score, e2a.method, op.product_name AS off_name, op.brand AS off_brand, op.quantity,
          ap.sku AS aldi_sku, ap.name AS aldi_name, ap.brand_name AS aldi_brand, ap.selling_size
   FROM ean_to_aldi e2a
   JOIN off_products op ON op.ean = e2a.ean
   JOIN aldi_products ap ON ap.sku = e2a.aldi_sku
   ORDER BY e2a.score DESC LIMIT 8
-`).all();
+`;
 console.log('\n[match] top matches:');
 console.table(sample);

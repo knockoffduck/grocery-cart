@@ -15,8 +15,13 @@ export const dynamic = 'force-dynamic';
 // The original Hono server exposed this at /cert with Content-Type
 // application/x-pem-file and filename aldi-cart-cert.pem. We keep that
 // shape so existing scripts and bookmarks still work.
+//
+// In production behind Dokploy, HTTPS is terminated at the Traefik reverse
+// proxy and this endpoint is not required for end users — it is retained
+// only for LAN/dev use. The path is hard-locked to <cwd>/certs/cert.pem
+// (no env override) to avoid turning this into a path-traversal read.
 export async function GET() {
-  const certPath = process.env.TLS_CERT || resolve(process.cwd(), 'certs/cert.pem');
+  const certPath = resolve(process.cwd(), 'certs/cert.pem');
   if (!existsSync(certPath)) {
     return NextResponse.json({ error: 'cert not found; run `npm run https:gen`' }, { status: 404 });
   }

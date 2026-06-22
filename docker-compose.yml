@@ -8,14 +8,26 @@
 # without editing this file.
 #
 # Required runtime env vars (set these in the Dokploy service config, not here):
-#   PROXY_URL              — Webshare rotating proxy URL for the Aldi + OFF
-#                            sync scripts. The app server itself does not
-#                            proxy outbound traffic.
-#   ALDI_SERVICE_POINT     — Optional. Defaults to G452 (Perth Central).
+#   DATABASE_URL          — Postgres connection string for the external
+#                           database container (e.g. the Dokploy "postgres"
+#                           service on the same network). Schema is
+#                           bootstrapped on first request via src/lib/db.ts.
+#   PROXY_URL             — Webshare rotating proxy URL. Only needed if you
+#                           run `npm run sync:off` (from the host or a
+#                           sidecar) to refresh the OFF EAN matches. The
+#                           running app server does NOT read this var.
+#                           Leave empty in Dokploy and the container still
+#                           starts.
+#   ALDI_SERVICE_POINT    — Optional. Defaults to G452 (Perth Central).
 #
 # Volumes (persistent across deploys):
-#   aldi-data    — SQLite database (catalogue + manual matches + carts)
 #   aldi-certs   — TLS cert + key for the HTTPS port (optional)
+#
+# Container hardening: the app service runs read-only with all Linux
+# capabilities dropped and no-new-privileges set. The only writable
+# surfaces are the /tmp tmpfs and the /app/.next/cache tmpfs (Next.js
+# build cache). An RCE in the Node process can write to those but cannot
+# write anywhere else or escalate privileges.
 # =============================================================================
 
 services:
@@ -40,19 +52,24 @@ services:
       - HTTP_PORT=3000
       - HTTPS_PORT=7778
       - HOST=0.0.0.0
-      - ALDI_DB_PATH=/data/aldi.db
-      # Sync proxy — REQUIRED for the OFF sync script to work. Without it
-      # the OFF sync hits the silent-HTML ban page after ~50 requests.
-      - PROXY_URL=${PROXY_URL:?PROXY_URL is required}
+      # Database — required. Set in the Dokploy service env-var UI to the
+      # internal Postgres URL (e.g.
+      # postgresql://postgres:...@database-grocerycart-l0kdmu:5432/grocery-cart).
+      # src/lib/db.ts throws on startup if this is missing. The
+      # `${VAR:?msg}` form makes `docker compose config` fail loudly if
+      # it's unset in the environment Dokploy inherits.
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
+      # Sync proxy — optional. Only consumed by `npm run sync:off` (run
+      # from the host or a sidecar); the running app server doesn't read
+      # it. Leave empty in the Dokploy env-var UI and the container
+      # still starts.
+      - PROXY_URL=${PROXY_URL:-}
       # Aldi service point. Change to your local store's code if needed.
       - ALDI_SERVICE_POINT=${ALDI_SERVICE_POINT:-G452}
       # Next.js bookkeeping
       - NEXT_TELEMETRY_DISABLED=1
 
     volumes:
-      # SQLite + WAL files. Backing this up is the deploy operator's job
-      # (Dokploy supports volume backups via the UI).
-      - aldi-data:/data
       # TLS certs for the HTTPS port. Read-only mount of a host directory
       # OR a named volume populated by an init step. Dokploy lets you bind
       # this to a host path; for named volumes, populate via the Console.
@@ -61,7 +78,7 @@ services:
     # Health check matches the Dockerfile's HEALTHCHECK directive. Traefik
     # honours this to know when the container is ready.
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/stats').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -83,8 +100,21 @@ services:
         max-size: "10m"
         max-file: "3"
 
+    # Container hardening. The app only writes to in-memory tmpfs paths
+    # (/tmp, /app/.next/cache) — everything else is read-only. Disabling
+    # Linux capabilities drops the attack surface for an RCE.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
 volumes:
-  aldi-data:
-    name: aldi-cart-data
   aldi-certs:
     name: aldi-cart-certs
+  # Named volume for the LAN HTTPS cert. The database lives in a separate
+  # Postgres container on the Dokploy network; this app reads it via
+  # the DATABASE_URL env var and does not persist any state of its own.

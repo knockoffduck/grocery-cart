@@ -2,26 +2,13 @@
 // Iterates the Aldi brand list, queries OFF for that brand, and persists results.
 // Private-label Aldi brands (which OFF won't have) are silently skipped.
 
-import { db, setMeta } from '../src/lib/db.js';
-import { readFileSync } from 'node:fs';
+import { sql, setMeta, tx } from '../src/lib/db.js';
 import { proxyFetch } from '../src/lib/proxy.js';
 
 const OFF_BASE = 'https://world.openfoodfacts.org';
 const PAGE_SIZE = 100;
 const RATE_LIMIT_MS = 200;     // proxies are fast; a small delay is enough
 const BRAND_REQUEST_CAP = 50;  // OFF often returns <page_size for small brands; cap pages per brand
-
-const insert = db.prepare(`
-  INSERT INTO off_products (ean, product_name, brand, quantity, categories, image_url, countries)
-  VALUES (@ean, @product_name, @brand, @quantity, @categories, @image_url, @countries)
-  ON CONFLICT(ean) DO UPDATE SET
-    product_name = excluded.product_name,
-    brand = excluded.brand,
-    quantity = excluded.quantity,
-    categories = excluded.categories,
-    image_url = excluded.image_url,
-    countries = excluded.countries
-`);
 
 type OffRow = {
   code?: string;
@@ -35,6 +22,33 @@ type OffRow = {
   image_url?: string;
   image_small_url?: string;
   countries_tags?: string[];
+};
+
+function toRow(p: OffRow) {
+  return {
+    ean: p.code ?? '',
+    product_name: p.product_name ?? p.product_name_en ?? null,
+    brand: p.brands ?? (p.brands_tags?.[0] ?? null),
+    quantity: p.quantity ?? null,
+    categories: p.categories ?? (p.categories_tags ?? []).join(','),
+    image_url: p.image_small_url ?? p.image_url ?? null,
+    countries: (p.countries_tags ?? []).join(','),
+  };
+}
+
+const insert = async (row: ReturnType<typeof toRow>) => {
+  await sql`
+    INSERT INTO off_products (ean, product_name, brand, quantity, categories, image_url, countries)
+    VALUES (${row.ean}, ${row.product_name}, ${row.brand}, ${row.quantity},
+            ${row.categories}, ${row.image_url}, ${row.countries})
+    ON CONFLICT (ean) DO UPDATE SET
+      product_name = EXCLUDED.product_name,
+      brand = EXCLUDED.brand,
+      quantity = EXCLUDED.quantity,
+      categories = EXCLUDED.categories,
+      image_url = EXCLUDED.image_url,
+      countries = EXCLUDED.countries
+  `;
 };
 
 async function fetchByBrand(brand: string, page: number): Promise<{ products: OffRow[]; count: number }> {
@@ -71,30 +85,31 @@ async function fetchByBrand(brand: string, page: number): Promise<{ products: Of
   return { products: (data.products ?? []) as OffRow[], count: data.count ?? 0 };
 }
 
-function toRow(p: OffRow) {
-  return {
-    ean: p.code ?? '',
-    product_name: p.product_name ?? p.product_name_en ?? null,
-    brand: p.brands ?? (p.brands_tags?.[0] ?? null),
-    quantity: p.quantity ?? null,
-    categories: p.categories ?? (p.categories_tags ?? []).join(','),
-    image_url: p.image_small_url ?? p.image_url ?? null,
-    countries: (p.countries_tags ?? []).join(','),
-  };
+async function loadBrands(): Promise<string[]> {
+  const rows = (await sql`
+    SELECT DISTINCT brand_name FROM aldi_products
+    WHERE brand_name IS NOT NULL AND brand_name != ''
+    ORDER BY brand_name
+  `) as { brand_name: string }[];
+  const brands = rows.map((r) => r.brand_name.trim()).filter(Boolean);
+  if (brands.length === 0) {
+    throw new Error('No brands in aldi_products table. Run `npm run sync:aldi` first.');
+  }
+  return brands;
 }
 
 async function syncOffByBrand(): Promise<{ brands: number; products: number; elapsedMs: number }> {
   const start = Date.now();
   console.log('[off-sync] starting brand-targeted AU sync');
 
-  const brands: string[] = JSON.parse(
-    readFileSync('./aldi-brands.json', 'utf-8')
-  );
+  const brands = await loadBrands();
   console.log(`[off-sync] querying ${brands.length} Aldi brands`);
 
-  const writeMany = db.transaction((rows: ReturnType<typeof toRow>[]) => {
-    for (const r of rows) if (r.ean) insert.run(r);
-  });
+  const writeMany = async (rows: ReturnType<typeof toRow>[]) => {
+    await tx(async (s) => {
+      for (const r of rows) if (r.ean) await insert(r);
+    });
+  };
 
   let totalProducts = 0;
   let successfulBrands = 0;
@@ -110,7 +125,7 @@ async function syncOffByBrand(): Promise<{ brands: number; products: number; ela
         const rows = products
           .map(toRow)
           .filter((r) => r.ean && r.ean.length >= 8 && r.ean.length <= 14);
-        writeMany(rows);
+        await writeMany(rows);
         brandTotal += rows.length;
         if (products.length < PAGE_SIZE) break;
         await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));
@@ -130,9 +145,9 @@ async function syncOffByBrand(): Promise<{ brands: number; products: number; ela
     if (i < brands.length - 1) await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));
   }
 
-  setMeta('off_sync_completed_at', new Date().toISOString());
-  setMeta('off_sync_total', String(totalProducts));
-  setMeta('off_sync_brands_hit', String(successfulBrands));
+  await setMeta('off_sync_completed_at', new Date().toISOString());
+  await setMeta('off_sync_total', String(totalProducts));
+  await setMeta('off_sync_brands_hit', String(successfulBrands));
   const elapsedMs = Date.now() - start;
   console.log(`[off-sync] done: ${totalProducts} products from ${successfulBrands}/${brands.length} brands in ${(elapsedMs / 1000).toFixed(1)}s`);
   if (failures.length) {

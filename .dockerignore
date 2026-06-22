@@ -4,7 +4,8 @@
 # we don't need speeds up `docker build` considerably.
 
 # Local data and certs — these live in named volumes at runtime, not in
-# the image.
+# the image. The database is an external Postgres container (no SQLite
+# snapshot is bundled anymore), so excluding data/ is unconditional.
 data/
 certs/
 

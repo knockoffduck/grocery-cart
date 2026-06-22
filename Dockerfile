@@ -10,11 +10,14 @@
 #
 # Multi-stage build:
 #   1. `base`     — Node 22 base + system build tools (python3, g++, bash)
-#   2. `deps`     — `npm ci` for the full dep tree (needed for the
-#                   better-sqlite3 postinstall native compile)
+#   2. `deps`     — `npm ci` for the full dep tree
 #   3. `builder`  — `next build` (webpack) + `tsc` for server.ts
-#   4. `runner`   — slim Node 22 + `npm ci --omit=dev` to get only the
-#                   production node_modules (~150 MB instead of ~1.4 GB)
+#   4. `runner`   — clean Node 22 (no build tools) that COPIES the
+#                   pre-built production node_modules from `prod-deps`, plus
+#                   `.next`, `public/`, and `dist/`. The database is an
+#                   external Postgres container; no SQLite snapshot is
+#                   bundled. Schema bootstrap happens on first request
+#                   via src/lib/db.ts.
 #
 # Why we DON'T use `output: "standalone"` despite enabling it in next.config.ts:
 #   Next.js 16's standalone trace doesn't include `next/dist/compiled/webpack/*`
@@ -22,21 +25,25 @@
 #   server crashes at startup with `Cannot find module 'webpack'`. The simplest
 #   fix is to ship the full production node_modules (~150 MB runtime cost).
 #
+# Stage 4's `runner` no longer inherits from `base` (which carries
+# python3/make/g++) — it uses a clean `node:22-bookworm-slim` and copies
+# pre-built `node_modules` from `prod-deps` instead. This removes ~200 MB
+# of build tools from the production image.
+#
 # Build command (Dokploy does this for you):
 #   docker build -t aldi-cart:latest .
 # Run locally to verify:
 #   docker run --rm -p 3000:3000 \
-#     -v aldi-cart-data:/data \
 #     -v aldi-cart-certs:/app/certs:ro \
 #     -e PROXY_URL=... \
-#     -e ALDI_DB_PATH=/data/aldi.db \
+#     -e DATABASE_URL=postgresql://... \
 #     aldi-cart:latest
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # Stage 1: base — Node 22 + system build tools
 # -----------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS base
+FROM node:22-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS base
 
 # python3 + make + g++ are required by better-sqlite3's native build.
 # bash is required by the `postinstall` hook (scripts/copy-wasm.sh).
@@ -66,6 +73,21 @@ RUN mkdir -p public
 # `--legacy-peer-deps` is a safety net in case any future dep adds a peer
 # that conflicts. better-sqlite3 triggers a native compile in postinstall.
 RUN npm ci --no-audit --no-fund --legacy-peer-deps
+
+# -----------------------------------------------------------------------------
+# Stage 2.5: prod-deps — production-only node_modules (no devDeps)
+# -----------------------------------------------------------------------------
+# Rebuilds against the slim libstdc++ the runner uses, so we don't have
+# to copy a prebuilt .node binary from `deps` (which was built with g++
+# on PATH). Drops ~1.2 GB of devDependencies (eslint, typescript, tsx,
+# @types/*) from the runtime image.
+FROM base AS prod-deps
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY scripts/ ./scripts/
+RUN mkdir -p public
+RUN npm ci --omit=dev --no-audit --no-fund --legacy-peer-deps
 
 # -----------------------------------------------------------------------------
 # Stage 3: build (Next.js + compiled custom server)
@@ -101,12 +123,14 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npx next build --webpack
 
 # -----------------------------------------------------------------------------
-# Stage 4: runner (slim production image with prod-only node_modules)
+# Stage 4: runner (clean production image — no build tools, no devDeps)
 # -----------------------------------------------------------------------------
-FROM base AS runner
+FROM node:22-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS runner
 
 # libstdc++ is required at runtime by the prebuilt better-sqlite3 .node
 # binary. The minimal Debian image doesn't include it by default.
+# NOTE: no python3/make/g++ here — those only live in the `base`/
+# `deps` stages where better-sqlite3 is built.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
@@ -121,10 +145,6 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV HTTP_PORT=3000
 ENV HTTPS_PORT=7778
 ENV HOST=0.0.0.0
-# Where the SQLite database lives. Override at run time with `-e ALDI_DB_PATH=...`
-# or via Dokploy's environment variables. The /data path is the convention
-# we use for the volume mount.
-ENV ALDI_DB_PATH=/data/aldi.db
 
 # ---- Build output ----
 # .next, public/, and dist/ are the artefacts the compiled server needs
@@ -137,27 +157,26 @@ RUN rm -rf /app/.next/cache /app/.next/trace /app/.next/dev
 COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/dist ./dist
 
-# ---- Production node_modules ----
-# Install ONLY the runtime dependencies. We do this in the runner stage
-# (not by copying from deps) so devDependencies — eslint, typescript,
-# tsx, @types/* — never ship. better-sqlite3's native .node is rebuilt
-# here against the slim runtime image's libstdc++.
-#
-# The postinstall hook (scripts/copy-wasm.sh) copies the ZBar WASM
-# assets into public/ at install time. public/ already exists in this
-# stage (copied from the builder above), so the hook's destination is
-# ready. The script itself is included so npm can invoke it.
-COPY --from=builder --chown=node:node /app/scripts/ ./scripts/
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund --legacy-peer-deps \
- && npm cache clean --force
+# ---- Entrypoint ----
+# scripts/docker-entrypoint.sh runs before the Node server: it
+# optionally probes Postgres reachability, then `exec node
+# dist/server.js` so SIGTERM reaches the graceful-shutdown handler.
+COPY --from=builder --chown=root:root /app/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# ---- Persistent data directories ----
-# SQLite database and TLS certs both live on mounted volumes so they
-# survive container restarts and image upgrades. Create the directories
-# owned by the `node` user so the app can write to them.
-RUN mkdir -p /data /app/certs && chown -R node:node /data /app/certs
-VOLUME ["/data", "/app/certs"]
+# ---- Production node_modules ----
+# Copy production-only node_modules from the `prod-deps` stage. This
+# drops devDependencies (eslint, typescript, tsx, @types/*) — about
+# 1.2 GB of bloat that was shipping in earlier builds.
+COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
+
+# ---- TLS cert directory ----
+# The LAN HTTPS cert lives on a mounted volume so it survives container
+# restarts and image upgrades. The `node` user owns it so the app can
+# read the cert/key files. (The database lives in an external Postgres
+# container, so no DB volume is needed here.)
+RUN mkdir -p /app/certs && chown -R node:node /app/certs
+VOLUME ["/app/certs"]
 
 # Expose both HTTP and HTTPS ports. Dokploy only forwards HTTP; HTTPS is
 # kept available for users who want to map the container's TLS port
@@ -168,12 +187,13 @@ EXPOSE 3000 7778
 # a `node` user with uid 1000.
 USER node
 
-# Health check: poll /api/stats every 30s. Traefik and Dokploy both honour
+# Health check: poll /api/health every 30s. Traefik and Dokploy both honour
 # this signal to decide when the container is ready to receive traffic.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+process.env.HTTP_PORT+'/api/stats').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+process.env.HTTP_PORT+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # Start the compiled custom server. The compiled JS is CJS that requires
 # the `next` package from this image's production node_modules. No tsx,
 # no source files, no devDependencies at runtime.
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "dist/server.js"]

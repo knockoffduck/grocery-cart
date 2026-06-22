@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { sql } from '@/lib/db';
+import { checkBodySize } from '@/lib/bodySize';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,25 +10,27 @@ export const dynamic = 'force-dynamic';
 // cart should bump qty, not create a duplicate line).
 export async function POST(request: Request, ctx: RouteContext<'/api/cart/[id]/items'>) {
   const { id } = await ctx.params;
+  const tooBig = checkBodySize(request);
+  if (tooBig) return tooBig;
   const body = (await request.json().catch(() => ({}))) as { sku?: string; quantity?: number };
-  if (!body.sku) return NextResponse.json({ error: 'sku required' }, { status: 400 });
+  if (!body.sku) return NextResponse.json({ error: 'sku required' }, { status: 400, headers: { 'Cache-Control': 'no-store' } });
   const qty = Math.max(1, Math.floor(body.quantity ?? 1));
-  const cart = db.prepare('SELECT id FROM carts WHERE id = ?').get(id);
-  if (!cart) return NextResponse.json({ error: 'cart not found' }, { status: 404 });
-  const existing = db.prepare(
-    'SELECT quantity FROM cart_items WHERE cart_id = ? AND aldi_sku = ?',
-  ).get(id, body.sku) as { quantity: number } | undefined;
+  const [cart] = await sql`SELECT id FROM carts WHERE id = ${id}`;
+  if (!cart) return NextResponse.json({ error: 'cart not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+  const [existing] = await sql<{ quantity: number }[]>`
+    SELECT quantity FROM cart_items WHERE cart_id = ${id} AND aldi_sku = ${body.sku}
+  `;
   if (existing) {
-    db.prepare(
-      'UPDATE cart_items SET quantity = quantity + ?, added_at = datetime(\'now\') WHERE cart_id = ? AND aldi_sku = ?',
-    ).run(qty, id, body.sku);
+    await sql`
+      UPDATE cart_items SET quantity = quantity + ${qty}, added_at = NOW() WHERE cart_id = ${id} AND aldi_sku = ${body.sku}
+    `;
   } else {
-    db.prepare(
-      'INSERT INTO cart_items (cart_id, aldi_sku, quantity) VALUES (?, ?, ?)',
-    ).run(id, body.sku, qty);
+    await sql`
+      INSERT INTO cart_items (cart_id, aldi_sku, quantity) VALUES (${id}, ${body.sku}, ${qty})
+    `;
   }
-  db.prepare('UPDATE carts SET updated_at = datetime(\'now\') WHERE id = ?').run(id);
-  return NextResponse.json({ ok: true });
+  await sql`UPDATE carts SET updated_at = NOW() WHERE id = ${id}`;
+  return NextResponse.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
 // DELETE /api/cart/:id/items
@@ -37,6 +40,6 @@ export async function POST(request: Request, ctx: RouteContext<'/api/cart/[id]/i
 // "Clear cart" button in the UI.
 export async function DELETE(_request: Request, ctx: RouteContext<'/api/cart/[id]/items'>) {
   const { id } = await ctx.params;
-  db.prepare('DELETE FROM cart_items WHERE cart_id = ?').run(id);
-  return NextResponse.json({ ok: true });
+  await sql`DELETE FROM cart_items WHERE cart_id = ${id}`;
+  return NextResponse.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
 }

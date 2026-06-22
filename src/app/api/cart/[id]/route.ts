@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { sql } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,16 +8,16 @@ export const dynamic = 'force-dynamic';
 // so the client gets name, brand, image, and price without a second roundtrip.
 export async function GET(_request: NextRequest, ctx: RouteContext<'/api/cart/[id]'>) {
   const { id } = await ctx.params;
-  const cart = db.prepare('SELECT * FROM carts WHERE id = ?').get(id);
-  if (!cart) return NextResponse.json({ error: 'cart not found' }, { status: 404 });
-  const items = db.prepare(`
+  const [cart] = await sql`SELECT * FROM carts WHERE id = ${id}`;
+  if (!cart) return NextResponse.json({ error: 'cart not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+  const items = await sql<any[]>`
     SELECT ci.aldi_sku, ci.quantity, ci.manual_price_cents, ci.added_at,
            ap.name, ap.brand_name, ap.selling_size, ap.price_cents, ap.primary_image, ap.slug
     FROM cart_items ci
     JOIN aldi_products ap ON ap.sku = ci.aldi_sku
-    WHERE ci.cart_id = ?
+    WHERE ci.cart_id = ${id}
     ORDER BY ci.added_at DESC
-  `).all(id) as any[];
+  `;
 
   let subtotal = 0;
   let itemCount = 0;
@@ -35,13 +35,13 @@ export async function GET(_request: NextRequest, ctx: RouteContext<'/api/cart/[i
     })),
     subtotal_cents: subtotal,
     item_count: itemCount,
-  });
+  }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
 // DELETE /api/cart/:id
 // Clear the cart (deletes the cart row, cascades to items).
 export async function DELETE(_request: NextRequest, ctx: RouteContext<'/api/cart/[id]'>) {
   const { id } = await ctx.params;
-  db.prepare('DELETE FROM carts WHERE id = ?').run(id);
-  return NextResponse.json({ ok: true });
+  await sql`DELETE FROM carts WHERE id = ${id}`;
+  return NextResponse.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
 }

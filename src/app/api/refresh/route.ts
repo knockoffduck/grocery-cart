@@ -14,9 +14,9 @@ export async function GET() {
     ok: true,
     hint: 'Run `npm run sync:all` from the server terminal to refresh the catalogue.',
     lastSync: {
-      aldi: getMeta('aldi_sync_completed_at'),
-      off: getMeta('off_sync_completed_at'),
-      match: getMeta('match_completed_at'),
+      aldi: await getMeta('aldi_sync_completed_at'),
+      off: await getMeta('off_sync_completed_at'),
+      match: await getMeta('match_completed_at'),
     },
   });
 }

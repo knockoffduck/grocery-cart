@@ -120,3 +120,36 @@ The cert is good for 365 days and covers `localhost`, `127.0.0.1`, and the LAN I
 ## Privacy
 
 The scan flow makes no third-party API calls. All lookups go to your own server. The only outbound network calls happen during `npm run sync:aldi` and `npm run sync:off`, which proxy through Webshare.
+
+## Deploying to Dokploy
+
+The repo ships a `Dockerfile` (single-container image) and `docker-compose.yml`
+(Dokploy's preferred "Docker Compose" source type). The database is an
+external Postgres container in the same Dokploy network — the app reads
+`DATABASE_URL` and bootstraps the schema on first request via
+`src/lib/db.ts`.
+
+### Required env vars (set in Dokploy's service "Environment" tab)
+
+| Var | Required? | Notes |
+|-----|-----------|-------|
+| `DATABASE_URL` | **REQUIRED** | Postgres connection string for the external database container. Format: `postgresql://user:pass@host:5432/db`. The host must resolve on the Dokploy internal network (e.g. `postgresql://postgres:...@database-grocerycart-l0kdmu:5432/grocery-cart`). `src/lib/db.ts` throws on startup if this is missing. |
+| `PROXY_URL` | optional | Webshare rotating proxy URL. Only needed if you run `npm run sync:off` to refresh the OFF EAN matches. Format: `http://user:pass@p.webshare.io:80`. The running app server does not read this — only the sync script does. |
+
+### Volumes (named, persist across deploys)
+
+- `aldi-cart-certs` → `/app/certs` (self-signed TLS cert for LAN use; not needed if Dokploy terminates HTTPS at Traefik)
+
+### One-time setup
+
+1. In Dokploy, create a service, type "Docker Compose", point it at this repo
+2. The compose file uses Traefik labels automatically — point your domain at the service
+3. Set `DATABASE_URL` in the env-var UI to the internal Postgres URL; set `PROXY_URL` (or leave empty)
+4. Deploy. The first build takes ~3-5 minutes; subsequent builds are faster (layer cache).
+5. The container's `/api/health` endpoint is used for the healthcheck; Traefik waits for it to return 200 before routing traffic.
+6. DB schema is bootstrapped on first request via the `src/lib/db.ts` schema init (idempotent `CREATE TABLE IF NOT EXISTS`).
+
+### Rotating the Webshare proxy
+
+Update `PROXY_URL` in Dokploy's env-var UI and redeploy. The next time you run
+`npm run sync:off` (from the host or a sidecar container), the new proxy is used.
