@@ -101,7 +101,7 @@ FROM deps AS builder
 # the source tree — Dokploy's fresh-clone build context has an empty
 # (or missing) public/ because the WASM files are gitignored.
 COPY --from=deps /app/public ./public
-COPY next.config.ts tsconfig.json ./
+COPY next.config.ts tsconfig.json tailwind.config.js ./
 COPY src ./src
 COPY server.ts ./
 
@@ -115,6 +115,17 @@ RUN npx tsc server.ts \
     --esModuleInterop \
     --skipLibCheck \
     --outDir dist
+
+# Pre-compile Tailwind CSS using the standalone API. This bypasses the
+# @tailwindcss/postcss plugin, whose scanner doesn't find source files
+# inside this Next.js 16 + Docker build (the plugin works fine locally and
+# in standalone mode, but produces CSS without utility classes when invoked
+# from Next.js's webpack build). The prebuild writes a fully-baked CSS
+# file that Next.js imports as a static asset. The same script is what
+# `npm run build:css` runs in dev, so the two paths stay in sync.
+RUN node scripts/tailwind-standalone.mjs \
+    src/app/globals.css \
+    src/app/globals.compiled.css
 
 # Build the Next.js app.
 #

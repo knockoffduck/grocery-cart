@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import "./globals.css";
+import "./globals.compiled.css";
 
 export const metadata: Metadata = {
   title: "Aldi Cart",
