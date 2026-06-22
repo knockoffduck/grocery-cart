@@ -1,0 +1,62 @@
+# Build context. Keep this list tight — every file we DON'T ignore here
+# ships to the Docker build context, and the deps stage will reinstall
+# node_modules from scratch if package.json changes. Excluding everything
+# we don't need speeds up `docker build` considerably.
+
+# Local data and certs — these live in named volumes at runtime, not in
+# the image.
+data/
+certs/
+
+# WASM assets are copied by `npm run postinstall` (scripts/copy-wasm.sh)
+# during the deps stage. Don't double-bake them into the build context.
+public/a.out.js
+public/a.out.wasm
+
+# Build output. The Dockerfile rebuilds everything.
+.next/
+out/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local env + secrets. Dokploy injects env at runtime; never bake secrets
+# into the image.
+.env
+.env.*
+secrets/
+
+# Git + IDE + OS noise
+.git/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Logs and crash dumps
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Tests + coverage — the production image doesn't need to run the test
+# suite. CI is a separate concern.
+test-e2e.mjs
+coverage/
+.nyc_output/
+
+# Node + Python artefacts
+node_modules/
+__pycache__/
+*.pyc
+
+# Docker self-reference (don't recurse)
+Dockerfile
+docker-compose.yml
+.dockerignore

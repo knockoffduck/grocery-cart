@@ -3,7 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 
-const API = 'http://localhost:3000/api';
+const API = process.env.BASE_URL ? process.env.BASE_URL + '/api' : 'http://localhost:3000/api';
 
 // Minimal localStorage shim
 const _ls = {};
