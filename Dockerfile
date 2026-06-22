@@ -94,11 +94,15 @@ RUN npm ci --omit=dev --no-audit --no-fund --legacy-peer-deps
 # -----------------------------------------------------------------------------
 FROM deps AS builder
 
-# Source for the build. public/ includes the WASM assets the postinstall hook
-# just dropped in, so we re-copy after `npm ci` finishes.
+# Source for the build. public/ contains the WASM assets that the
+# `npm ci` postinstall hook (`scripts/copy-wasm.sh`) just dropped in
+# inside the `deps` stage. We copy them from `deps` (not the build
+# context) so the build doesn't depend on a populated public/ dir in
+# the source tree — Dokploy's fresh-clone build context has an empty
+# (or missing) public/ because the WASM files are gitignored.
+COPY --from=deps /app/public ./public
 COPY next.config.ts tsconfig.json ./
 COPY src ./src
-COPY public ./public
 COPY server.ts ./
 
 # Compile the custom HTTPS server to plain JS so the runtime image doesn't
