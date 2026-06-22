@@ -26,6 +26,9 @@ export function CartView({ cartId, refreshKey, onChange }: CartViewProps) {
   const [itemCount, setItemCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Two-step clear: tap "Clear" once to show the confirm, tap "Confirm" to wipe.
+  // Avoids the mistake of accidentally emptying a half-scanned cart.
+  const [confirmingClear, setConfirmingClear] = useState(false);
 
   const load = useCallback(async () => {
     if (!cartId) return;
@@ -57,6 +60,19 @@ export function CartView({ cartId, refreshKey, onChange }: CartViewProps) {
     onChange?.();
   };
 
+  // Clear-all uses a dedicated endpoint that keeps the cart row. We just
+  // re-load (or let refreshKey fire) to see the empty state.
+  const clearCart = async () => {
+    if (!cartId || !confirmingClear) return;
+    setConfirmingClear(false);
+    try {
+      await fetch(`/api/cart/${cartId}/items`, { method: "DELETE" });
+      onChange?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to clear cart");
+    }
+  };
+
   const fmt = (cents: number | null) => cents == null ? "—" : `$${(cents / 100).toFixed(2)}`;
 
   return (
@@ -70,6 +86,36 @@ export function CartView({ cartId, refreshKey, onChange }: CartViewProps) {
             {fmt(subtotal)}
           </span>
         </div>
+        {items.length > 0 && (
+          <div className="mt-2 flex items-center justify-end">
+            {confirmingClear ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-aldi-danger font-medium">
+                  Clear all {itemCount}?
+                </span>
+                <button
+                  onClick={clearCart}
+                  className="px-3 py-1 rounded-full bg-aldi-danger text-white text-xs font-semibold active:scale-95 transition"
+                >
+                  Confirm
+                </button>
+                <button
+                  onClick={() => setConfirmingClear(false)}
+                  className="px-3 py-1 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:bg-aldi-bg transition"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmingClear(true)}
+                className="text-xs text-aldi-text-muted hover:text-aldi-danger transition"
+              >
+                Clear cart
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {loading && items.length === 0 ? (

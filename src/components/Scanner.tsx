@@ -32,8 +32,6 @@ interface ScannerProps {
   onCancel?: () => void;
 }
 
-// Formats ZXing needs to try. ZBar covers most of these natively, but ZXing
-// is the universal fallback so we ask for everything Aldi might use.
 const ZXING_FORMATS = [
   BarcodeFormat.EAN_13,
   BarcodeFormat.EAN_8,
@@ -52,8 +50,6 @@ ZXING_HINTS.set(DecodeHintType.POSSIBLE_FORMATS, ZXING_FORMATS);
 ZXING_HINTS.set(DecodeHintType.TRY_HARDER, true);
 ZXING_HINTS.set(DecodeHintType.CHARACTER_SET, "UTF-8");
 
-// Formats the native BarcodeDetector API supports. Android Chrome exposes
-// DataMatrix here, which is why we prefer it on Android for produce stickers.
 const NATIVE_FORMATS = [
   "ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39",
   "qr_code", "data_matrix", "itf", "codabar",
@@ -61,14 +57,35 @@ const NATIVE_FORMATS = [
 
 type Engine = "native" | "zbar" | "zxing";
 
+// Torch and manual focus aren't in the TS lib's MediaTrackCapabilities.
+// This shape captures everything the scanner needs from getCapabilities()
+// and applyConstraints() without scattering `as any` casts.
+type CamCaps = MediaTrackCapabilities & {
+  torch?: boolean;
+  focusMode?: string[];
+  focusDistance?: { min?: number; max?: number; step?: number };
+};
+
 function pickEngine(): Engine {
   if (typeof window === "undefined") return "zxing";
-  // BarcodeDetector is the best option (fast, all formats, native) — only
-  // Android Chrome has it. iOS Safari does NOT.
   if ("BarcodeDetector" in window) return "native";
-  // ZBar WASM is fast on iOS but doesn't support DataMatrix. Used as the
-  // primary engine on iOS Safari.
   return "zbar";
+}
+
+interface VideoDevice {
+  deviceId: string;
+  label: string;
+}
+
+// Best-effort label for a MediaDeviceInfo based on its position. iOS Safari
+// often only exposes the deviceId until getUserMedia has been called at
+// least once, so we fall back to "Camera 1/2/3" based on the order.
+function labelDevice(d: MediaDeviceInfo, idx: number, total: number): string {
+  if (d.label) return d.label.replace(/\s*\(.*?\)\s*/g, "").trim() || d.label;
+  // Fall back to position heuristics. The order iOS reports devices in is
+  // consistent per-session: back ultra-wide, back wide, front, back tele.
+  // We can't know for sure without a label, so just call them Camera 1..N.
+  return `Camera ${idx + 1} of ${total}`;
 }
 
 export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
@@ -77,8 +94,14 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
   const zxingControlsRef = useRef<IScannerControls | null>(null);
   const zbarScannerRef = useRef<ZBarScanner | null>(null);
   const nativeStreamRef = useRef<MediaStream | null>(null);
+  const nativeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Whichever engine "owns" the current stream. ZBar creates its own video
+  // element and stream, so the torch and focus helpers need to know whether
+  // to look at our <video> or at the one ZBar inserted.
+  const streamOwnerRef = useRef<"native" | "zxing" | "zbar" | null>(null);
   const lastDecodedRef = useRef<string | null>(null);
   const lockUntilRef = useRef<number>(0);
+  const focusResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [engine, setEngine] = useState<Engine | null>(null);
 
   const [match, setMatch] = useState<EanMatch | null>(null);
@@ -90,14 +113,26 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
   const [manualResults, setManualResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [videoDevices, setVideoDevices] = useState<VideoDevice[]>([]);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+  // The last tapped point on the video, shown briefly to confirm the focus
+  // hit landed where the user expected. Normalized 0..1 across the video.
+  const [focusPoint, setFocusPoint] = useState<{ x: number; y: number; key: number } | null>(null);
 
-  // Cleanup on unmount. Idempotent — each engine cleans up its own resources.
   useEffect(() => {
     return () => stopAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const stopAll = useCallback(() => {
+    if (focusResetTimerRef.current) {
+      clearTimeout(focusResetTimerRef.current);
+      focusResetTimerRef.current = null;
+    }
+    if (nativeIntervalRef.current) {
+      clearInterval(nativeIntervalRef.current);
+      nativeIntervalRef.current = null;
+    }
     if (nativeStreamRef.current) {
       nativeStreamRef.current.getTracks().forEach((t) => t.stop());
       nativeStreamRef.current = null;
@@ -110,13 +145,10 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
       try { zxingControlsRef.current.stop(); } catch {}
       zxingControlsRef.current = null;
     }
+    streamOwnerRef.current = null;
   }, []);
 
   const handleEan = useCallback(async (ean: string) => {
-    // Try offline first if the user has synced the catalogue. The dump
-    // endpoint is heavy, so we don't hit it on every scan — only on cold
-    // start of the scan tab. The product details in the offline cache may
-    // be slightly older than the server's, which is fine for the use case.
     try {
       const cached = await lookupEanOffline(ean);
       if (cached) {
@@ -132,8 +164,6 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
           }
           return;
         }
-        // Offline matched:false → fall through to network for the OFF info
-        // and manual-match flow, since the offline cache doesn't store that.
       }
     } catch {
       /* offline cache unavailable, just fall back to network */
@@ -163,8 +193,6 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
     }
   }, [cartId, onScanned]);
 
-  // Dedup: same code re-firing is ignored; different code is allowed through
-  // immediately. Lockout for 1.5s after a hit so we don't re-process.
   const accept = useCallback((text: string) => {
     const now = Date.now();
     if (now < lockUntilRef.current && text === lastDecodedRef.current) return false;
@@ -176,19 +204,54 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
     return true;
   }, [handleEan]);
 
-  // Engine selection and startup.
+  // Helper: find the active video element and its track. ZBar creates its
+  // own <video>, so we may need to look inside the container rather than
+  // at the ref. This is the single source of truth for "where is the feed".
+  const getActiveTrack = useCallback((): { track: MediaStreamTrack | null; video: HTMLVideoElement | null } => {
+    if (streamOwnerRef.current === "native" && nativeStreamRef.current) {
+      return { track: nativeStreamRef.current.getVideoTracks()[0] ?? null, video: videoRef.current };
+    }
+    if (streamOwnerRef.current === "zbar") {
+      const v = containerRef.current?.querySelector("video") as HTMLVideoElement | null;
+      const stream = (v?.srcObject as MediaStream | null);
+      return { track: stream?.getVideoTracks()[0] ?? null, video: v };
+    }
+    if (streamOwnerRef.current === "zxing" && videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      return { track: stream.getVideoTracks()[0] ?? null, video: videoRef.current };
+    }
+    return { track: null, video: null };
+  }, []);
+
+  // Enumerate video devices. Labels are only populated after the user has
+  // granted camera permission at least once in the session. We call this
+  // after start() so labels are available.
+  const refreshDevices = useCallback(async () => {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const vids = devs
+        .filter((d) => d.kind === "videoinput")
+        .map((d, i, all) => ({ deviceId: d.deviceId, label: labelDevice(d, i, all.length) }));
+      setVideoDevices(vids);
+      // If we have no active selection yet, default to the first device.
+      setActiveDeviceId((cur) => cur ?? vids[0]?.deviceId ?? null);
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  // Engine startup. Runs once on mount. Camera swaps are handled by a
+  // separate effect that re-applies the constraints of the active stream.
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!containerRef.current || !videoRef.current) return;
     let cancelled = false;
-    let activeStream: MediaStream | null = null;
 
     const want = pickEngine();
     setEngine(want);
 
     const startNative = async () => {
       try {
-        // BarcodeDetector path: we own the video, the stream, the loop.
         const detector = new (window as any).BarcodeDetector({ formats: NATIVE_FORMATS });
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -202,14 +265,13 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
-        activeStream = stream;
         nativeStreamRef.current = stream;
+        streamOwnerRef.current = "native";
         const video = videoRef.current!;
         video.srcObject = stream;
         await video.play();
         if (cancelled) return;
 
-        // Capture the torch-capable track.
         const track = stream.getVideoTracks()[0];
         if (track && track.getCapabilities) {
           const caps = track.getCapabilities() as MediaTrackCapabilities & { torch?: boolean };
@@ -217,6 +279,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
         }
 
         setStatus("ready");
+        refreshDevices();
         const tick = async () => {
           if (cancelled) return;
           try {
@@ -228,13 +291,10 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
             /* a single failed frame is fine */
           }
         };
-        const interval = setInterval(tick, 200);
-        // Stash the interval id on the ref so cleanup can find it.
-        (nativeStreamRef.current as any).__interval = interval;
+        nativeIntervalRef.current = setInterval(tick, 200);
       } catch (e) {
         if (cancelled) return;
         console.warn("[scanner] native failed, trying ZBar", e);
-        // Fall through to ZBar.
         await startZbar();
       }
     };
@@ -248,7 +308,6 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
           onDetect: (result: ZBarResult) => accept(result.data),
           scanInterval: 150,
           facingMode: "environment",
-          // WASM assets are served from /public/ (copied from node_modules).
           wasmPath: "/",
         });
         zbarScannerRef.current = scanner;
@@ -257,14 +316,14 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
           scanner.stop();
           return;
         }
-        // ZBar owns the camera; mirror its torch capability back to React.
+        streamOwnerRef.current = "zbar";
         setStatus("ready");
-        // Probe the video ZBar created to surface torch support.
+        refreshDevices();
         const v = containerRef.current!.querySelector("video") as HTMLVideoElement | null;
         if (v && v.srcObject) {
           const track = (v.srcObject as MediaStream).getVideoTracks()[0];
           if (track && track.getCapabilities) {
-            const caps = track.getCapabilities() as MediaTrackCapabilities & { torch?: boolean };
+            const caps = track.getCapabilities() as CamCaps;
             setTorchSupported(!!caps.torch);
           }
         }
@@ -288,29 +347,29 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
         zxingControlsRef.current = controls;
         if (result) accept(result.getText());
 
-        // After start, capture the track for torch.
-        if (video.srcObject && !nativeStreamRef.current) {
+        if (video.srcObject && !streamOwnerRef.current) {
+          streamOwnerRef.current = "zxing";
           const stream = video.srcObject as MediaStream;
           const track = stream.getVideoTracks()[0];
           if (track && track.getCapabilities) {
-            const caps = track.getCapabilities() as MediaTrackCapabilities & { torch?: boolean; focusMode?: string[] };
+            const caps = track.getCapabilities() as CamCaps;
             setTorchSupported(!!caps.torch);
             if (caps.focusMode?.includes("continuous")) {
               track.applyConstraints({ focusMode: "continuous" } as any).catch(() => {});
             }
           }
+          refreshDevices();
+          setStatus("ready");
         }
       };
       try {
-        // Cast: @zxing/browser 0.2.0's .d.ts appears to have an
-        // overloaded-with-fewer-args type definition than the runtime API.
         const controls = await (reader as any).decodeFromVideoDevice(
           null,
           video,
           callback,
         ) as IScannerControls;
         zxingControlsRef.current = controls;
-        setStatus("ready");
+        if (!streamOwnerRef.current) setStatus("ready");
       } catch (e) {
         if (cancelled) return;
         console.error("[scanner] all engines failed", e);
@@ -325,23 +384,106 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
 
     return () => {
       cancelled = true;
-      if (activeStream) activeStream.getTracks().forEach((t) => t.stop());
-      if (nativeStreamRef.current) {
-        const interval = (nativeStreamRef.current as any).__interval;
-        if (interval) clearInterval(interval);
-        nativeStreamRef.current.getTracks().forEach((t) => t.stop());
-        nativeStreamRef.current = null;
-      }
-      if (zbarScannerRef.current) {
-        try { zbarScannerRef.current.stop(); } catch {}
-        zbarScannerRef.current = null;
-      }
-      if (zxingControlsRef.current) {
-        try { zxingControlsRef.current.stop(); } catch {}
-        zxingControlsRef.current = null;
-      }
+      stopAll();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accept]);
+
+  // Camera switch. When the user picks a different deviceId we stop the
+  // current video track, re-acquire a stream with the new device, and
+  // attach it to the existing video element. The detection loop keeps
+  // running (it's polling `video` regardless of which stream it carries).
+  useEffect(() => {
+    if (!activeDeviceId) return;
+    if (streamOwnerRef.current === "zbar") {
+      // ZBar owns the stream; rebind by stopping and restarting with the
+      // explicit deviceId. Simpler: tell ZBar to use a different source by
+      // restarting the engine. The cost is a ~1s black flash, which is
+      // acceptable when the user explicitly asked to switch cameras.
+      try { zbarScannerRef.current?.stop(); } catch {}
+      zbarScannerRef.current = null;
+      const v = containerRef.current?.querySelector("video");
+      if (v) v.srcObject = null;
+      // ZBar's typed ScannerOptions doesn't include `deviceId` even though
+      // getUserMedia accepts it. Cast through `unknown` to satisfy strict
+      // TS without scattering `as any` over the call site.
+      const scanner = new ZBarScanner({
+        container: containerRef.current!,
+        onDetect: (result: ZBarResult) => accept(result.data),
+        scanInterval: 150,
+        deviceId: activeDeviceId,
+        wasmPath: "/",
+      } as unknown as ConstructorParameters<typeof ZBarScanner>[0]);
+      zbarScannerRef.current = scanner;
+      scanner.start().then(() => {
+        const v2 = containerRef.current?.querySelector("video") as HTMLVideoElement | null;
+        if (v2?.srcObject) {
+          const track = (v2.srcObject as MediaStream).getVideoTracks()[0];
+          if (track?.getCapabilities) {
+            const caps = track.getCapabilities() as CamCaps;
+            setTorchSupported(!!caps.torch);
+            setTorchOn(false);
+          }
+        }
+      });
+      return;
+    }
+
+    if (streamOwnerRef.current === "native" && nativeStreamRef.current) {
+      // Reuse the existing engine and interval; just swap the underlying track.
+      const oldStream = nativeStreamRef.current;
+      navigator.mediaDevices
+        .getUserMedia({ video: { deviceId: { exact: activeDeviceId } }, audio: false })
+        .then((newStream) => {
+          if (nativeStreamRef.current !== oldStream) {
+            // User already switched again; drop the result.
+            newStream.getTracks().forEach((t) => t.stop());
+            return;
+          }
+          oldStream.getTracks().forEach((t) => t.stop());
+          nativeStreamRef.current = newStream;
+          streamOwnerRef.current = "native";
+          const video = videoRef.current!;
+          video.srcObject = newStream;
+          video.play();
+          const track = newStream.getVideoTracks()[0];
+          if (track?.getCapabilities) {
+            const caps = track.getCapabilities() as CamCaps;
+            setTorchSupported(!!caps.torch);
+            setTorchOn(false);
+          }
+        })
+        .catch((err) => {
+          console.warn("[scanner] device switch failed", err);
+        });
+      return;
+    }
+
+    if (streamOwnerRef.current === "zxing") {
+      // ZXing also re-acquires the camera when we change the video srcObject.
+      const video = videoRef.current!;
+      const oldStream = video.srcObject as MediaStream | null;
+      navigator.mediaDevices
+        .getUserMedia({ video: { deviceId: { exact: activeDeviceId } }, audio: false })
+        .then((newStream) => {
+          oldStream?.getTracks().forEach((t) => t.stop());
+          video.srcObject = newStream;
+          video.play();
+          const track = newStream.getVideoTracks()[0];
+          if (track?.getCapabilities) {
+            const caps = track.getCapabilities() as CamCaps;
+            setTorchSupported(!!caps.torch);
+            setTorchOn(false);
+            if (caps.focusMode?.includes("continuous")) {
+              track.applyConstraints({ focusMode: "continuous" } as any).catch(() => {});
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn("[scanner] device switch failed", err);
+        });
+    }
+  }, [activeDeviceId, accept]);
 
   function flashSuccess() {
     const flash = document.getElementById("scan-flash");
@@ -358,18 +500,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
   }
 
   async function toggleTorch() {
-    // The torch track might be on either our own native stream or ZBar's.
-    let track: MediaStreamTrack | null = null;
-    if (nativeStreamRef.current) {
-      track = nativeStreamRef.current.getVideoTracks()[0] ?? null;
-    } else if (zbarScannerRef.current) {
-      const v = containerRef.current?.querySelector("video") as HTMLVideoElement | null;
-      if (v && v.srcObject) {
-        track = (v.srcObject as MediaStream).getVideoTracks()[0] ?? null;
-      }
-    } else if (videoRef.current?.srcObject) {
-      track = (videoRef.current.srcObject as MediaStream).getVideoTracks()[0] ?? null;
-    }
+    const { track } = getActiveTrack();
     if (!track) return;
     const next = !torchOn;
     try {
@@ -383,6 +514,60 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
         /* not supported */
       }
     }
+  }
+
+  // Tap-to-focus. The browser expects a normalized (0..1) point relative to
+  // the video track, and the device needs to advertise focusMode support
+  // (typically "manual"). We focus at the tapped point, then drop back to
+  // continuous autofocus after a short hold so the user doesn't have to
+  // keep tapping to track moving items.
+  async function focusAt(clientX: number, clientY: number) {
+    const { track, video } = getActiveTrack();
+    if (!track || !video) return;
+    const rect = video.getBoundingClientRect();
+    const x = (clientX - rect.left) / rect.width;
+    const y = (clientY - rect.top) / rect.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
+
+    setFocusPoint({ x, y, key: Date.now() });
+    setTimeout(() => setFocusPoint(null), 900);
+
+    const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & {
+      focusMode?: string[];
+    };
+    if (!caps.focusMode?.length) return;
+
+    try {
+      // Safari requires focusMode at the top level; Chrome accepts it under
+      // advanced. We try the top-level form first, then fall back.
+      try {
+        await track.applyConstraints({
+          focusMode: "manual",
+          pointsOfInterest: [{ x, y }],
+        } as any);
+      } catch {
+        await track.applyConstraints({
+          advanced: [{ focusMode: "manual", pointsOfInterest: [{ x, y }] } as any],
+        } as any);
+      }
+      if (focusResetTimerRef.current) clearTimeout(focusResetTimerRef.current);
+      focusResetTimerRef.current = setTimeout(() => {
+        track.applyConstraints({ focusMode: "continuous" } as any).catch(() => {});
+      }, 1500);
+    } catch (e) {
+      console.warn("[scanner] tap-to-focus not supported", e);
+    }
+  }
+
+  function onVideoClick(e: React.MouseEvent<HTMLDivElement>) {
+    e.preventDefault();
+    focusAt(e.clientX, e.clientY);
+  }
+
+  function onVideoTouch(e: React.TouchEvent<HTMLDivElement>) {
+    if (e.touches.length === 0) return;
+    const t = e.touches[0];
+    focusAt(t.clientX, t.clientY);
   }
 
   async function runManualSearch() {
@@ -421,14 +606,32 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
     }
   }
 
+  // Cycle to the next device, or wrap to the first. Keeps the button small.
+  function cycleCamera() {
+    if (videoDevices.length < 2) return;
+    const idx = videoDevices.findIndex((d) => d.deviceId === activeDeviceId);
+    const next = videoDevices[(idx + 1) % videoDevices.length];
+    setActiveDeviceId(next.deviceId);
+  }
+
+  // Show a short label of the current camera in the badge so the user knows
+  // what they'll get when they tap the switch button. Truncate to keep the
+  // pill compact.
+  const currentDeviceLabel = (() => {
+    const d = videoDevices.find((v) => v.deviceId === activeDeviceId);
+    if (!d) return null;
+    return d.label.length > 18 ? d.label.slice(0, 17) + "…" : d.label;
+  })();
+
   return (
     <div className="flex-1 flex flex-col">
       <div
         ref={containerRef}
+        onClick={onVideoClick}
+        onTouchStart={onVideoTouch}
         className="relative bg-black aspect-[4/3] w-full max-w-xl mx-auto overflow-hidden"
+        style={{ touchAction: "manipulation" }}
       >
-        {/* The native and ZXing engines use this video element. ZBar replaces
-            it with its own. Either way the container is what we render into. */}
         <video
           ref={videoRef}
           playsInline
@@ -444,6 +647,60 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
         </div>
         <div id="scan-flash" className="scan-flash" />
 
+        {/* Tap-to-focus reticle. A quick ring that fades out so the user
+            sees the focus hit land where they tapped. */}
+        {focusPoint && (
+          <div
+            key={focusPoint.key}
+            className="absolute pointer-events-none z-10"
+            style={{
+              left: `${focusPoint.x * 100}%`,
+              top: `${focusPoint.y * 100}%`,
+              transform: "translate(-50%, -50%)",
+            }}
+          >
+            <div className="w-16 h-16 rounded-full border-2 border-white/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.25)] focus-pulse" />
+          </div>
+        )}
+
+        {/* Camera switch button. Top-right, only if there are 2+ cameras. */}
+        {videoDevices.length > 1 && status === "ready" && (
+          <button
+            onClick={(e) => { e.stopPropagation(); cycleCamera(); }}
+            className="absolute top-2 right-2 z-20 w-10 h-10 rounded-full bg-black/60 text-white flex items-center justify-center active:scale-95 transition"
+            aria-label="Switch camera"
+            title="Switch camera"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="w-5 h-5">
+              <path d="M3 7h3l2-2h8l2 2h3v12H3z" />
+              <path d="M16 11l-4-3v8z" fill="currentColor" />
+              <path d="M21 4l-2 2M21 4l-2-2M21 4h-4M21 4v4" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
+
+        {/* Torch button. Bottom-right, only if the device supports it. */}
+        {torchSupported && status === "ready" && (
+          <button
+            onClick={(e) => { e.stopPropagation(); toggleTorch(); }}
+            className={`absolute bottom-2 right-2 z-20 w-10 h-10 rounded-full flex items-center justify-center active:scale-95 transition ${
+              torchOn ? "bg-aldi-blue text-white" : "bg-black/60 text-white"
+            }`}
+            aria-label="Toggle torch"
+            title="Toggle torch"
+          >
+            {torchOn ? (
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                <path d="M9 2h6l-1 5h-4zM8 9h8v3l-3 2v6h-2v-6l-3-2z" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="w-5 h-5">
+                <path d="M9 2h6l-1 5h-4zM8 9h8v3l-3 2v6h-2v-6l-3-2z" />
+              </svg>
+            )}
+          </button>
+        )}
+
         {status === "error" && (
           <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-white bg-black/80 z-20">
             <div>
@@ -455,30 +712,27 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
         )}
 
         {status === "ready" && engine && (
-          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/60 text-white/80 text-[10px] font-mono uppercase tracking-wider z-10">
-            {engine === "native" ? "Native" : engine === "zbar" ? "WASM" : "ZXing"}
+          <div className="absolute top-2 left-2 z-20 flex flex-col gap-1 items-start">
+            <span className="px-2 py-0.5 rounded-full bg-black/60 text-white/80 text-[10px] font-mono uppercase tracking-wider">
+              {engine === "native" ? "Native" : engine === "zbar" ? "WASM" : "ZXing"}
+            </span>
+            {currentDeviceLabel && (
+              <span className="px-2 py-0.5 rounded-full bg-black/60 text-white/80 text-[10px] font-medium max-w-[180px] truncate">
+                {currentDeviceLabel}
+              </span>
+            )}
           </div>
         )}
       </div>
 
       <div className="p-3 bg-white border-b border-aldi-border flex items-center justify-between gap-2">
-        <p className="text-sm text-aldi-text-muted">Point your camera at the barcode.</p>
-        <div className="flex gap-2">
-          {torchSupported && (
-            <button
-              onClick={toggleTorch}
-              className="px-3 py-1.5 rounded-full border border-aldi-border text-sm font-medium hover:bg-aldi-bg transition"
-            >
-              {torchOn ? "Torch off" : "Torch on"}
-            </button>
-          )}
-          <button
-            onClick={onCancel}
-            className="px-3 py-1.5 rounded-full border border-aldi-border text-sm font-medium hover:bg-aldi-bg transition"
-          >
-            Cancel
-          </button>
-        </div>
+        <p className="text-sm text-aldi-text-muted">Point your camera at the barcode. Tap to focus.</p>
+        <button
+          onClick={onCancel}
+          className="px-3 py-1.5 rounded-full border border-aldi-border text-sm font-medium hover:bg-aldi-bg transition"
+        >
+          Cancel
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
