@@ -104,6 +104,20 @@ CREATE TABLE IF NOT EXISTS manual_matches (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Audit trail of on-the-fly corrections. Write-only: every time a user
+-- swaps a wrongly auto-matched scan for the right product we append a row.
+-- Lets later bulk jobs re-score systematically-wrong ean_to_aldi rows in
+-- scripts/match.ts. No foreign keys — carts/skus may be gone by audit time.
+CREATE TABLE IF NOT EXISTS corrections (
+  ean TEXT,
+  was_sku TEXT NOT NULL,
+  now_sku TEXT NOT NULL,
+  cart_id TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_corrections_ean ON corrections(ean);
+CREATE INDEX IF NOT EXISTS idx_corrections_created ON corrections(created_at);
+
 CREATE TABLE IF NOT EXISTS carts (
   id TEXT PRIMARY KEY,
   created_at TIMESTAMP DEFAULT NOW(),

@@ -216,6 +216,22 @@ export async function lookupEanOffline(ean: string): Promise<CachedEanMatch | nu
   }
 }
 
+// Mirror a server-side manual_matches/correction into the offline cache so
+// the next scan of the same EAN resolves correctly even without a re-sync.
+// The `eans` store uses out-of-line keys (EAN -> SKU), so this is a single
+// put(). Best-effort: errors are swallowed; a missed write only means the
+// fix won't take effect offline until the next full sync.
+export async function upsertCachedEanMapping(ean: string, sku: string): Promise<void> {
+  const db = await openDb();
+  try {
+    await reqToPromise(
+      tx(db, [STORE_EANS], "readwrite").objectStore(STORE_EANS).put(sku, ean),
+    );
+  } finally {
+    db.close();
+  }
+}
+
 export async function searchCachedProducts(query: string, limit = 30): Promise<Product[]> {
   const db = await openDb();
   try {

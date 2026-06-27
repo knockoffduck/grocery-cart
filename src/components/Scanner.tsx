@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { BarcodeScanner as ZBarScanner, type ScanResult as ZBarResult } from "web-wasm-barcode-reader";
 import type { IScannerControls } from "@zxing/browser";
 import { BrowserMultiFormatReader, BarcodeFormat, DecodeHintType, type Result, type Exception } from "@zxing/library";
-import { lookupEanOffline } from "@/lib/client/catalogue";
+import { lookupEanOffline, upsertCachedEanMapping } from "@/lib/client/catalogue";
 
 interface EanMatch {
   matched: boolean;
@@ -586,24 +586,76 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
     }
   }
 
-  async function saveManualMatch(ean: string, sku: string) {
+  // Correct a wrong auto-match (or simply teach the app a new barcode).
+  //
+  // - wrongSku: the SKU that was wrongly added by the auto-match. Omitted
+  //   (null) on the manual-match-of-unmatched-scan path, in which case we
+  //   only add the right product and persist the mapping — no delete, no
+  //   audit entry. wrongSku may also equal rightSku if user re-selects the
+  //   same product; we still no-op the delete on equal SKUs.
+  // - rightSku: the product the user picked.
+  // - ean: the scanned barcode. Null if we don't know it (e.g. a swap
+  //   started from the Cart view); in that case we skip the mapping +
+  //   audit writes — we can only fix the cart line, not the model.
+  async function swapItem(
+    ean: string | null,
+    wrongSku: string | null,
+    rightSku: string,
+  ) {
     if (!cartId || adding) return;
     setAdding(true);
     try {
-      await fetch("/api/manual-match", {
+      // 1. Drop the wrong line (if any and if different from the right one).
+      if (wrongSku && wrongSku !== rightSku) {
+        await fetch(`/api/cart/${cartId}/items/${encodeURIComponent(wrongSku)}`, {
+          method: "DELETE",
+        });
+      }
+      // 2. Add (or bump) the right line.
+      const addRes = await fetch(`/api/cart/${cartId}/items`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ean, aldi_sku: sku }),
+        body: JSON.stringify({ sku: rightSku, quantity: 1 }),
       });
-      await fetch(`/api/cart/${cartId}/items`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sku, quantity: 1 }),
-      });
+      if (!addRes.ok) throw new Error(`add failed: HTTP ${addRes.status}`);
+
+      if (ean) {
+        // 3. Persist the corrected EAN -> SKU mapping. Server upserts on
+        //    conflict so a previously-wrong mapping gets overwritten too.
+        //    Fire-and-forget — a failure here doesn't unwind the swap.
+        void fetch("/api/manual-match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ean, aldi_sku: rightSku }),
+        }).catch(() => {});
+        // 4. Mirror into the offline cache so the next scan resolves
+        //    correctly without a re-sync.
+        void upsertCachedEanMapping(ean, rightSku).catch(() => {});
+        // 5. Audit trail. Best-effort.
+        if (wrongSku && wrongSku !== rightSku) {
+          void fetch("/api/corrections", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ean,
+              was_sku: wrongSku,
+              now_sku: rightSku,
+              cart_id: cartId,
+            }),
+          }).catch(() => {});
+        }
+      }
       onScanned?.();
     } finally {
       setAdding(false);
     }
+  }
+
+  // Unmatched-scan path: teach the app a new EAN -> SKU mapping and add the
+  // product. This is `swapItem` with no wrongSku — kept as a thin wrapper so
+  // the ScanResult call sites read clearly.
+  function saveManualMatch(ean: string, sku: string) {
+    return swapItem(ean, null, sku);
   }
 
   // Cycle to the next device, or wrap to the first. Keeps the button small.
@@ -747,6 +799,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
             searching={searching}
             runManualSearch={runManualSearch}
             saveManualMatch={saveManualMatch}
+            swapItem={swapItem}
             adding={adding}
           />
         ) : (
@@ -769,6 +822,7 @@ interface ScanResultProps {
   searching: boolean;
   runManualSearch: () => void;
   saveManualMatch: (ean: string, sku: string) => void;
+  swapItem: (ean: string | null, wrongSku: string | null, rightSku: string) => void;
   adding: boolean;
 }
 
@@ -782,16 +836,25 @@ function ScanResult({
   searching,
   runManualSearch,
   saveManualMatch,
+  swapItem,
   adding,
 }: ScanResultProps) {
   const [added, setAdded] = useState(false);
+  // Flips a successful match into the search-and-replace panel. Carries
+  // the wrong SKU through to swapItem so the cart line gets removed too.
+  const [replaceMode, setReplaceMode] = useState(false);
   useEffect(() => {
     if (match.matched && match.best && cartId && !added) {
       setAdded(true);
     }
   }, [match, cartId, added]);
 
-  if (match.matched && match.best) {
+  function enterReplaceMode() {
+    setReplaceMode(true);
+    setManualSearch("");
+  }
+
+  if (match.matched && match.best && !replaceMode) {
     return (
       <div className="bg-white rounded-xl border border-aldi-success overflow-hidden">
         <div className="bg-aldi-success/10 px-4 py-2 text-aldi-success text-sm font-semibold flex items-center gap-2">
@@ -822,12 +885,81 @@ function ScanResult({
             </div>
           </div>
         </div>
-        <button
-          onClick={onScanned}
-          className="w-full py-3 text-sm font-semibold text-aldi-blue border-t border-aldi-border hover:bg-aldi-bg transition"
-        >
-          Back to cart
-        </button>
+        <div className="grid grid-cols-2 border-t border-aldi-border">
+          <button
+            onClick={enterReplaceMode}
+            disabled={adding}
+            className="py-3 text-sm font-medium text-aldi-text-muted hover:bg-aldi-bg transition disabled:opacity-50"
+          >
+            Wrong item?
+          </button>
+          <button
+            onClick={onScanned}
+            className="py-3 text-sm font-semibold text-aldi-blue border-l border-aldi-border hover:bg-aldi-bg transition"
+          >
+            Back to cart
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Replace-mode (correction of a wrong auto-match) reuses the unmatched
+  // search panel below. We render a top banner showing which product is
+  // being replaced, then the standard search interface with the Use
+  // button now calling swapItem(ean, wrongSku, pickedSku).
+  if (match.matched && match.best && replaceMode) {
+    return (
+      <div className="space-y-3">
+        <div className="bg-white rounded-xl border border-aldi-danger p-3">
+          <div className="text-xs font-semibold text-aldi-danger uppercase tracking-wider">
+            Replacing this item
+          </div>
+          <div className="flex items-center gap-3 mt-2">
+            {match.best.image ? (
+              <img
+                src={match.best.image}
+                alt=""
+                className="w-12 h-12 object-contain rounded bg-aldi-bg shrink-0"
+                loading="lazy"
+                onError={(e) => { (e.target as HTMLImageElement).style.visibility = "hidden"; }}
+              />
+            ) : (
+              <div className="w-12 h-12 rounded bg-aldi-bg shrink-0" />
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="font-medium text-sm line-clamp-2 line-through decoration-aldi-danger/60">
+                {match.best.name}
+              </div>
+              <div className="text-xs text-aldi-text-muted mt-0.5">
+                {match.best.brand}{match.best.sellingSize ? ` · ${match.best.sellingSize}` : ""}
+              </div>
+            </div>
+            <button
+              onClick={() => { setReplaceMode(false); setManualSearch(""); }}
+              className="px-3 py-1.5 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:bg-aldi-bg transition"
+            >
+              Keep
+            </button>
+          </div>
+          <div className="mt-2 px-2 py-1 rounded bg-aldi-bg text-xs text-aldi-text-muted inline-block">
+            Scanned: <span className="font-mono">{match.ean}</span>
+          </div>
+          <p className="text-sm text-aldi-text-muted mt-2">
+            Find the right product below. We&apos;ll swap the cart line and remember this barcode next time.
+          </p>
+        </div>
+
+        <ProductSearchPanel
+          manualSearch={manualSearch}
+          setManualSearch={setManualSearch}
+          manualResults={manualResults}
+          searching={searching}
+          runManualSearch={runManualSearch}
+          adding={adding}
+          onPick={(p) => swapItem(match.ean, match.best!.sku, p.sku)}
+          emptyHint="No matches."
+        />
       </div>
     );
   }
@@ -854,54 +986,93 @@ function ScanResult({
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-aldi-border p-3">
-        <input
-          type="search"
-          value={manualSearch}
-          onChange={(e) => {
-            setManualSearch(e.target.value);
-            runManualSearch();
-          }}
-          placeholder="Search Aldi products…"
-          className="w-full px-3 py-2 rounded-lg bg-aldi-bg border border-aldi-border focus:border-aldi-blue focus:ring-2 focus:ring-aldi-blue/20 outline-none transition"
-        />
-        {searching ? (
-          <div className="text-sm text-aldi-text-muted py-3 text-center">Searching…</div>
-        ) : manualResults.length > 0 ? (
-          <ul className="mt-2 divide-y divide-aldi-border">
-            {manualResults.map((p) => (
-              <li key={p.sku} className="flex items-center gap-3 py-2">
-                {p.image ? (
-                  <img
-                    src={p.image}
-                    alt=""
-                    className="w-10 h-10 object-contain rounded bg-aldi-bg shrink-0"
-                    loading="lazy"
-                    onError={(e) => { (e.target as HTMLImageElement).style.visibility = "hidden"; }}
-                  />
-                ) : (
-                  <div className="w-10 h-10 rounded bg-aldi-bg shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium line-clamp-2">{p.name}</div>
-                  <div className="text-xs text-aldi-text-muted mt-0.5">
-                    {p.brand}{p.sellingSize ? ` · ${p.sellingSize}` : ""}
-                  </div>
+      <ProductSearchPanel
+        manualSearch={manualSearch}
+        setManualSearch={setManualSearch}
+        manualResults={manualResults}
+        searching={searching}
+        runManualSearch={runManualSearch}
+        adding={adding}
+        onPick={(p) => saveManualMatch(match.ean, p.sku)}
+        emptyHint="No matches."
+      />
+    </div>
+  );
+}
+
+// Shared search-and-pick panel used by both the unmatched-scan path and
+// the replace-mode path. The only difference is which `onPick` handler is
+// plugged in — saveManualMatch (teaches a new mapping) vs swapItem (also
+// removes a wrong cart line and audits the correction).
+interface ProductSearchPanelProps {
+  manualSearch: string;
+  setManualSearch: (s: string) => void;
+  manualResults: any[];
+  searching: boolean;
+  runManualSearch: () => void;
+  adding: boolean;
+  onPick: (p: { sku: string; name: string; brand: string | null; sellingSize: string | null; image: string | null }) => void;
+  emptyHint: string;
+}
+
+function ProductSearchPanel({
+  manualSearch,
+  setManualSearch,
+  manualResults,
+  searching,
+  runManualSearch,
+  adding,
+  onPick,
+  emptyHint,
+}: ProductSearchPanelProps) {
+  return (
+    <div className="bg-white rounded-xl border border-aldi-border p-3">
+      <input
+        type="search"
+        value={manualSearch}
+        onChange={(e) => {
+          setManualSearch(e.target.value);
+          runManualSearch();
+        }}
+        placeholder="Search Aldi products…"
+        className="w-full px-3 py-2 rounded-lg bg-aldi-bg border border-aldi-border focus:border-aldi-blue focus:ring-2 focus:ring-aldi-blue/20 outline-none transition"
+      />
+      {searching ? (
+        <div className="text-sm text-aldi-text-muted py-3 text-center">Searching…</div>
+      ) : manualResults.length > 0 ? (
+        <ul className="mt-2 divide-y divide-aldi-border">
+          {manualResults.map((p) => (
+            <li key={p.sku} className="flex items-center gap-3 py-2">
+              {p.image ? (
+                <img
+                  src={p.image}
+                  alt=""
+                  className="w-10 h-10 object-contain rounded bg-aldi-bg shrink-0"
+                  loading="lazy"
+                  onError={(e) => { (e.target as HTMLImageElement).style.visibility = "hidden"; }}
+                />
+              ) : (
+                <div className="w-10 h-10 rounded bg-aldi-bg shrink-0" />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium line-clamp-2">{p.name}</div>
+                <div className="text-xs text-aldi-text-muted mt-0.5">
+                  {p.brand}{p.sellingSize ? ` · ${p.sellingSize}` : ""}
                 </div>
-                <button
-                  onClick={() => saveManualMatch(match.ean, p.sku)}
-                  disabled={adding}
-                  className="px-3 py-1.5 rounded-full bg-aldi-blue text-white text-xs font-semibold hover:bg-aldi-blue-dark active:scale-95 transition disabled:opacity-50"
-                >
-                  {adding ? "…" : "Use"}
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : manualSearch.trim().length > 0 ? (
-          <div className="text-sm text-aldi-text-muted py-3 text-center">No matches.</div>
-        ) : null}
-      </div>
+              </div>
+              <button
+                onClick={() => onPick(p)}
+                disabled={adding}
+                className="px-3 py-1.5 rounded-full bg-aldi-blue text-white text-xs font-semibold hover:bg-aldi-blue-dark active:scale-95 transition disabled:opacity-50"
+              >
+                {adding ? "…" : "Use"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : manualSearch.trim().length > 0 ? (
+        <div className="text-sm text-aldi-text-muted py-3 text-center">{emptyHint}</div>
+      ) : null}
     </div>
   );
 }
