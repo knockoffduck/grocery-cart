@@ -101,7 +101,10 @@ FROM deps AS builder
 # context) so the build doesn't depend on a populated public/ dir in
 # the source tree — Dokploy's fresh-clone build context has an empty
 # (or missing) public/ because the WASM files are gitignored.
+# After the deps copy, we overlay our git-committed public files
+# (sw.js, icons) so the runner image has everything.
 COPY --from=deps /app/public ./public
+COPY public ./public
 COPY next.config.ts tsconfig.json tailwind.config.js ./
 COPY src ./src
 COPY server.ts ./

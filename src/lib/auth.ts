@@ -31,6 +31,10 @@ function getPool(): Pool {
     max: 5,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
+    // Some managed Postgres providers require SSL with self-signed
+    // certs. postgres.js handles this automatically; `pg` needs the
+    // explicit flag.
+    ssl: { rejectUnauthorized: false },
   });
   return _pool;
 }
@@ -43,14 +47,19 @@ function buildAuth() {
     );
   }
 
+  // baseURL is used by Better Auth for cookie domains and callback URLs.
+  // In production this MUST be the public URL (e.g. https://grocerycart.dvcklab.com).
+  // The fallback chain: env var → NEXT_PUBLIC variant → hardcoded domain → localhost.
   const baseURL =
     process.env.BETTER_AUTH_URL ||
     process.env.NEXT_PUBLIC_BETTER_AUTH_URL ||
+    'https://grocerycart.dvcklab.com' ||
     'http://localhost:3000';
 
   const trustedOrigins: string[] = [
     process.env.BETTER_AUTH_URL,
     process.env.NEXT_PUBLIC_BETTER_AUTH_URL,
+    baseURL,
     'http://localhost:3000',
     'https://localhost:7778',
     'https://192.168.68.55:7778',
