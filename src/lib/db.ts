@@ -144,17 +144,12 @@ CREATE TABLE IF NOT EXISTS meta (
 let schemaReady: Promise<void> | null = null;
 function ensureSchema(): Promise<void> {
   if (!schemaReady) {
-    schemaReady = sql.unsafe(SCHEMA).then(async () => {
-      // Bootstrap admin (no-op unless ADMIN_EMAIL/ADMIN_PASSWORD are
-      // set). Imported lazily to keep the cold-start graph small.
-      // Any error here is non-fatal — the bootstrap must never reject
-      // the schema promise or every DB query will permanently fail.
-      try {
-        const { ensureBootstrapAdmin } = await import('./bootstrap-admin.js');
-        await ensureBootstrapAdmin();
-      } catch (e: any) {
-        console.warn('[schema] bootstrap admin skipped:', e?.message ?? e);
-      }
+    schemaReady = sql.unsafe(SCHEMA).then(() => {
+      // Fire-and-forget the bootstrap admin — it must never delay the
+      // schema promise or every DB query blocks until it completes.
+      import('./bootstrap-admin.js')
+        .then(({ ensureBootstrapAdmin }) => ensureBootstrapAdmin())
+        .catch((e: any) => console.warn('[schema] bootstrap admin skipped:', e?.message ?? e));
     });
   }
   return schemaReady;
