@@ -29,43 +29,35 @@ async function doBootstrap(): Promise<void> {
     return;
   }
 
-  const ctx = await auth.$context;
-  const existing = await ctx.internalAdapter.findUserByEmail(email.toLowerCase());
-  // The admin plugin augments the user record with `role`; the core
-  // type doesn't include it, so we cast.
-  const existingRole = (existing as unknown as { role?: string | null } | null)?.role ?? null;
-  if (existing) {
-    // Make sure the existing user is in the admin role (idempotent
-    // — if the operator changed ADMIN_EMAIL to point at an existing
-    // user, this still works).
-    if (existingRole !== 'admin') {
-      await ctx.internalAdapter.updateUserByEmail(email.toLowerCase(), { role: 'admin' });
-      console.log(`[auth] promoted existing user ${email} to admin`);
-    }
-    return;
-  }
-
-  // signUpEmail creates the user + hashes the password. We discard
-  // the response — no session is wanted here. Headers is required
-  // by the API shape but we never use the resulting Set-Cookie.
-  // The Origin header is needed because Better Auth's CSRF middleware
-  // rejects requests without a matching Origin/Referer.
-  const baseURL =
-    process.env.BETTER_AUTH_URL ||
-    process.env.NEXT_PUBLIC_BETTER_AUTH_URL ||
-    'http://localhost:3000';
-  const b = new Headers({ origin: baseURL });
+  // Everything below touches Better Auth's managed tables (user, session,
+  // etc.). If the database is unreachable, migrations fail, or permissions
+  // are missing, we log the error and move on — the bootstrap must never
+  // reject the schema promise or every subsequent DB query will fail.
   try {
+    const ctx = await auth.$context;
+    const existing = await ctx.internalAdapter.findUserByEmail(email.toLowerCase());
+    const existingRole = (existing as unknown as { role?: string | null } | null)?.role ?? null;
+    if (existing) {
+      if (existingRole !== 'admin') {
+        await ctx.internalAdapter.updateUserByEmail(email.toLowerCase(), { role: 'admin' });
+        console.log(`[auth] promoted existing user ${email} to admin`);
+      }
+      return;
+    }
+
+    const baseURL =
+      process.env.BETTER_AUTH_URL ||
+      process.env.NEXT_PUBLIC_BETTER_AUTH_URL ||
+      'http://localhost:3000';
+    const b = new Headers({ origin: baseURL });
     await auth.api.signUpEmail({
       body: { email: email.toLowerCase(), password, name: 'Admin' },
       headers: b,
     });
-  } catch (e: any) {
-    console.error(`[auth] failed to create bootstrap admin: ${e?.message ?? e}`);
-    return;
-  }
 
-  // Promote the freshly-created user to admin.
-  await ctx.internalAdapter.updateUserByEmail(email.toLowerCase(), { role: 'admin' });
-  console.log(`[auth] bootstrap admin created: ${email}`);
+    await ctx.internalAdapter.updateUserByEmail(email.toLowerCase(), { role: 'admin' });
+    console.log(`[auth] bootstrap admin created: ${email}`);
+  } catch (e: any) {
+    console.warn(`[auth] bootstrap admin skipped (non-fatal): ${e?.message ?? e}`);
+  }
 }

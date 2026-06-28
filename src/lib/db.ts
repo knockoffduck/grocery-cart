@@ -147,8 +147,14 @@ function ensureSchema(): Promise<void> {
     schemaReady = sql.unsafe(SCHEMA).then(async () => {
       // Bootstrap admin (no-op unless ADMIN_EMAIL/ADMIN_PASSWORD are
       // set). Imported lazily to keep the cold-start graph small.
-      const { ensureBootstrapAdmin } = await import('./bootstrap-admin.js');
-      await ensureBootstrapAdmin();
+      // Any error here is non-fatal — the bootstrap must never reject
+      // the schema promise or every DB query will permanently fail.
+      try {
+        const { ensureBootstrapAdmin } = await import('./bootstrap-admin.js');
+        await ensureBootstrapAdmin();
+      } catch (e: any) {
+        console.warn('[schema] bootstrap admin skipped:', e?.message ?? e);
+      }
     });
   }
   return schemaReady;
