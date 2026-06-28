@@ -28,6 +28,7 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "dist/**",             // compiled custom server (tsc output)
     "next-env.d.ts",
     "scripts/**",          // tsx scripts don't need to match app lint
     "public/a.out.js",     // ZBar WASM bridge — not our code

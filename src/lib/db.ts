@@ -144,7 +144,12 @@ CREATE TABLE IF NOT EXISTS meta (
 let schemaReady: Promise<void> | null = null;
 function ensureSchema(): Promise<void> {
   if (!schemaReady) {
-    schemaReady = sql.unsafe(SCHEMA).then(() => undefined);
+    schemaReady = sql.unsafe(SCHEMA).then(async () => {
+      // Bootstrap admin (no-op unless ADMIN_EMAIL/ADMIN_PASSWORD are
+      // set). Imported lazily to keep the cold-start graph small.
+      const { ensureBootstrapAdmin } = await import('./bootstrap-admin.js');
+      await ensureBootstrapAdmin();
+    });
   }
   return schemaReady;
 }

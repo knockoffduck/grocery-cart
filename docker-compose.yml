@@ -66,6 +66,17 @@ services:
       - PROXY_URL=${PROXY_URL:-}
       # Aldi service point. Change to your local store's code if needed.
       - ALDI_SERVICE_POINT=${ALDI_SERVICE_POINT:-G452}
+      # Better Auth. BETTER_AUTH_SECRET must be set; the others have
+      # sensible dev defaults. In Dokploy, set BETTER_AUTH_URL to the
+      # public hostname (e.g. https://aldi.example.com) so cookie
+      # domain checks pass.
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-}
+      # Bootstrap admin (optional). If both are set, a user is created
+      # and promoted to 'admin' on the first cold start. Sign-ups
+      # through /signup always get the 'user' role.
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       # Next.js bookkeeping
       - NEXT_TELEMETRY_DISABLED=1
 

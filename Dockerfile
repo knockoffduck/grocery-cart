@@ -45,7 +45,8 @@
 # -----------------------------------------------------------------------------
 FROM node:22-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS base
 
-# python3 + make + g++ are required by better-sqlite3's native build.
+# python3 + make + g++ are required by better-sqlite3's native build
+# (still a devDep for scripts/seed-from-sqlite.mjs).
 # bash is required by the `postinstall` hook (scripts/copy-wasm.sh).
 # ca-certificates ensures HTTPS calls to Aldi / OFF / proxy endpoints work.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -143,9 +144,10 @@ RUN npx next build --webpack
 FROM node:22-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS runner
 
 # libstdc++ is required at runtime by the prebuilt better-sqlite3 .node
-# binary. The minimal Debian image doesn't include it by default.
+# binary (still a devDep for seed scripts). The minimal Debian image
+# doesn't include it by default.
 # NOTE: no python3/make/g++ here — those only live in the `base`/
-# `deps` stages where better-sqlite3 is built.
+# `deps` stages where native modules are compiled.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
