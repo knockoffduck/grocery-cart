@@ -30,9 +30,10 @@ interface CartViewProps {
   cartId: string | null;
   refreshKey: number;
   onChange?: () => void;
+  onCountChange?: (count: number) => void;
 }
 
-export function CartView({ cartId, refreshKey, onChange }: CartViewProps) {
+export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartViewProps) {
   const [items, setItems] = useState<CartItem[]>([]);
   const [subtotal, setSubtotal] = useState(0);
   const [itemCount, setItemCount] = useState(0);
@@ -69,6 +70,7 @@ export function CartView({ cartId, refreshKey, onChange }: CartViewProps) {
       setItems(data.items);
       setSubtotal(data.subtotal_cents);
       setItemCount(data.item_count);
+      onCountChange?.(data.item_count);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load cart");
     } finally {
@@ -76,7 +78,7 @@ export function CartView({ cartId, refreshKey, onChange }: CartViewProps) {
     }
   }, [cartId]);
 
-  useEffect(() => { load(); }, [load, refreshKey]);
+  useEffect(() => { load(); }, [load, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setQty = async (sku: string, qty: number) => {
     if (!cartId) return;
@@ -215,44 +217,46 @@ export function CartView({ cartId, refreshKey, onChange }: CartViewProps) {
   return (
     <div className="flex-1 flex flex-col relative">
       <div className="px-4 py-3 bg-white border-b border-aldi-border">
-        <div className="flex items-baseline justify-between">
-          <span className="text-sm text-aldi-text-muted">
-            {itemCount} item{itemCount === 1 ? "" : "s"}
-          </span>
-          <span className="text-2xl font-bold tabular-nums text-aldi-blue">
-            {fmt(subtotal)}
-          </span>
-        </div>
-        {items.length > 0 && (
-          <div className="mt-2 flex items-center justify-end">
-            {confirmingClear ? (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-aldi-danger font-medium">
-                  Clear all {itemCount}?
-                </span>
-                <button
-                  onClick={clearCart}
-                  className="px-3 py-1 rounded-full bg-aldi-danger text-white text-xs font-semibold active:scale-95 transition"
-                >
-                  Confirm
-                </button>
-                <button
-                  onClick={() => setConfirmingClear(false)}
-                  className="px-3 py-1 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:bg-aldi-bg transition"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setConfirmingClear(true)}
-                className="text-xs text-aldi-text-muted hover:text-aldi-danger transition"
-              >
-                Clear cart
-              </button>
-            )}
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-xs font-medium text-aldi-text-muted uppercase tracking-wide">
+              {itemCount} item{itemCount === 1 ? "" : "s"}
+            </span>
+            <div className="text-2xl font-black tabular-nums text-aldi-blue tracking-tight">
+              {fmt(subtotal)}
+            </div>
           </div>
-        )}
+          {items.length > 0 && (
+            <div>
+              {confirmingClear ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-aldi-danger font-medium">
+                    Clear all {itemCount}?
+                  </span>
+                  <button
+                    onClick={clearCart}
+                    className="px-3 py-1.5 rounded-full bg-aldi-danger text-white text-xs font-semibold active:scale-95 transition"
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    onClick={() => setConfirmingClear(false)}
+                    className="px-3 py-1.5 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:bg-aldi-bg transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmingClear(true)}
+                  className="px-3 py-1.5 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:text-aldi-danger hover:border-aldi-danger/40 transition"
+                >
+                  Clear cart
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {loading && items.length === 0 ? (
@@ -277,10 +281,10 @@ export function CartView({ cartId, refreshKey, onChange }: CartViewProps) {
         </div>
       ) : (
         <ul className="flex-1 divide-y divide-aldi-border bg-white">
-          {items.map((it) => {
+          {items.map((it, idx) => {
             const open = expandedSku === it.aldi_sku;
             return (
-              <li key={it.aldi_sku} className="px-3 pt-3 pb-1">
+              <li key={it.aldi_sku} className="row-enter px-3 pt-3 pb-1" style={{ animationDelay: `${Math.min(idx * 30, 150)}ms` }}>
                 <div className="flex items-center gap-3">
                   {it.primary_image ? (
                     <img

@@ -39,6 +39,7 @@ export function Home({ currentUser }: HomeProps) {
   const [screen, setScreen] = useState<Screen>("cart");
   const [cartId, setCartId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [cartCount, setCartCount] = useState(0);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -110,27 +111,33 @@ export function Home({ currentUser }: HomeProps) {
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col max-w-2xl w-full mx-auto pb-20">
+      <main className="flex-1 flex flex-col max-w-2xl w-full mx-auto pb-24">
         <SyncBanner />
         {screen === "cart" && (
-          <CartView cartId={cartId} refreshKey={refreshKey} onChange={bump} />
+          <div key="cart" className="screen-enter flex-1 flex flex-col">
+            <CartView cartId={cartId} refreshKey={refreshKey} onChange={bump} onCountChange={setCartCount} />
+          </div>
         )}
         {screen === "scan" && (
-          <Scanner
-            cartId={cartId}
-            onScanned={() => {
-              bump();
-              setScreen("cart");
-            }}
-            onCancel={() => setScreen("cart")}
-          />
+          <div key="scan" className="screen-enter flex-1 flex flex-col">
+            <Scanner
+              cartId={cartId}
+              onScanned={() => {
+                bump();
+                setScreen("cart");
+              }}
+              onCancel={() => setScreen("cart")}
+            />
+          </div>
         )}
         {screen === "search" && (
-          <SearchView cartId={cartId} onAdded={() => { bump(); setScreen("cart"); }} />
+          <div key="search" className="screen-enter flex-1 flex flex-col">
+            <SearchView cartId={cartId} onAdded={() => { bump(); setScreen("cart"); }} />
+          </div>
         )}
       </main>
 
-      <NavBar current={screen} onChange={setScreen} />
+      <NavBar current={screen} onChange={setScreen} cartCount={cartCount} />
     </>
   );
 }

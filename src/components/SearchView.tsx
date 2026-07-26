@@ -122,8 +122,15 @@ export function SearchView({ cartId, onAdded }: SearchViewProps) {
 
       <div className="flex-1 overflow-y-auto pb-4">
         {q.trim().length < 1 ? (
-          <div className="px-6 py-12 text-center text-aldi-text-muted">
-            Type a product name, brand, or category.
+          <div className="px-6 py-14 flex flex-col items-center text-center">
+            <div className="w-14 h-14 rounded-full bg-aldi-bg border border-aldi-border flex items-center justify-center mb-4">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-7 h-7 text-aldi-text-muted">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+            </div>
+            <p className="text-sm font-medium text-aldi-text mb-1">Search the catalogue</p>
+            <p className="text-sm text-aldi-text-muted">Type a product name, brand, or category.</p>
           </div>
         ) : loading && items.length === 0 ? (
           <div className="px-6 py-12 text-center text-aldi-text-muted">Searching…</div>
