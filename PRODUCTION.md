@@ -30,7 +30,7 @@ PWA, with no functional regressions and a hardened operational profile."
 ## Architecture summary
 
 - **Stack:** Next.js 16.2.9 + React 19 + Tailwind 4 + better-sqlite3
-  + Node 22. TypeScript throughout.
+  + Node 24. TypeScript throughout.
 - **Three screens:** Cart, Scan, Search — bottom-nav SPA.
 - **Three-engine scanner:** BarcodeDetector (native) → ZBar WASM →
   ZXing-js, with offline-first IndexedDB catalogue cache.
@@ -41,8 +41,8 @@ PWA, with no functional regressions and a hardened operational profile."
 
 ## Tech stack constraints
 
-- Node 22.x only (the WASM scanner and the prebuilt better-sqlite3 both
-  need glibc-compatible Node 22+).
+- Node 24.x (the WASM scanner and the prebuilt better-sqlite3 both
+  need glibc-compatible Node 22+; @zxing/library requires Node 24+).
 - Next.js 16 with the `--webpack` flag for builds. Turbopack is the
   default but `output: "standalone"` only works with webpack. We've
   disabled standalone entirely because the trace is broken with webpack
