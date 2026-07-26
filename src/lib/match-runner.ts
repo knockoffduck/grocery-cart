@@ -4,17 +4,13 @@
 //   - For every (off, aldi) pair, score by Jaccard name tokens + brand
 //     overlap + size bonus; pick the best match above a 0.4 threshold.
 //   - **Manual matches (manual_matches) are never touched or recomputed.**
-//     EANs with a manual match are skipped entirely; existing
-//     ean_to_aldi rows whose ean is in manual_matches are also kept
-//     (we DELETE FROM ean_to_aldi using NOT EXISTS against
-//     manual_matches).
+//     EANs with a manual match are skipped entirely.
 //   - Idempotent: rebuilds fuzzy rows on every run.
 //
 // The CLI `npm run match` and the admin-triggered auto-match both
-// call runMatch(). Progress is reported to the `meta` table so the
-// admin UI can show "matching…" status.
+// call runMatch(). Progress is reported to the `meta` collection.
 
-import { sql, setMeta } from './db.js';
+import { ensureAdminAuth, setMeta } from './pb';
 
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'with', 'of', 'for', 'in', 'on', 'at',
@@ -105,25 +101,58 @@ export async function runMatch(
 
   const start = Date.now();
   try {
-    // Pull OFF + Aldi rows. We EXCLUDE EANs that are already in
-    // manual_matches so we don't waste cycles recomputing what a
-    // human already locked in.
-    const off = (await sql<OffRow[]>`
-      SELECT op.ean, op.product_name, op.brand, op.quantity
-      FROM off_products op
-      WHERE NOT EXISTS (
-        SELECT 1 FROM manual_matches mm WHERE mm.ean = op.ean
-      )
-    `) as OffRow[];
+    const pb = await ensureAdminAuth();
 
-    const aldi = (await sql<AldiRow[]>`
-      SELECT sku, name, brand_name, selling_size FROM aldi_products
-    `) as AldiRow[];
+    // Load all manual match EANs to exclude
+    const manualEans = new Set<string>();
+    let page = 1;
+    while (true) {
+      const result = await pb.collection('manual_matches').getList(page, 500, { fields: 'ean' });
+      for (const r of result.items) manualEans.add(r.ean as string);
+      if (page >= result.totalPages) break;
+      page++;
+    }
+    const preservedManual = manualEans.size;
 
-    const [manualCount] = await sql<{ count: number }[]>`
-      SELECT COUNT(*)::int AS count FROM manual_matches
-    `;
-    const preservedManual = manualCount?.count ?? 0;
+    // Load OFF products (excluding those with manual matches)
+    const off: OffRow[] = [];
+    page = 1;
+    while (true) {
+      const result = await pb.collection('off_products').getList(page, 500, {
+        fields: 'ean,product_name,brand,quantity',
+      });
+      for (const r of result.items) {
+        if (!manualEans.has(r.ean as string)) {
+          off.push({
+            ean: r.ean as string,
+            product_name: (r.product_name as string) ?? null,
+            brand: (r.brand as string) ?? null,
+            quantity: (r.quantity as string) ?? null,
+          });
+        }
+      }
+      if (page >= result.totalPages) break;
+      page++;
+    }
+
+    // Load Aldi products
+    const aldi: AldiRow[] = [];
+    page = 1;
+    while (true) {
+      const result = await pb.collection('aldi_products').getList(page, 500, {
+        fields: 'sku,name,brand_name,selling_size',
+      });
+      for (const r of result.items) {
+        aldi.push({
+          sku: r.sku as string,
+          name: r.name as string,
+          brand_name: (r.brand_name as string) ?? null,
+          selling_size: (r.selling_size as string) ?? null,
+        });
+      }
+      if (page >= result.totalPages) break;
+      page++;
+    }
 
     log(`[match] OFF rows: ${off.length} (excluded ${preservedManual} manual), Aldi rows: ${aldi.length}`);
 
@@ -179,24 +208,40 @@ export async function runMatch(
       }
     }
 
-    // Replace fuzzy rows only — leave any ean_to_aldi row whose ean
-    // is in manual_matches untouched.
-    await sql.begin(async (s) => {
-      await s`
-        DELETE FROM ean_to_aldi
-        WHERE NOT EXISTS (
-          SELECT 1 FROM manual_matches mm WHERE mm.ean = ean_to_aldi.ean
-        )
-      `;
-      for (const [ean, sku, score, method] of matches) {
-        await s`
-          INSERT INTO ean_to_aldi (ean, aldi_sku, score, method)
-          VALUES (${ean}, ${sku}, ${score}, ${method})
-          ON CONFLICT (ean, aldi_sku) DO UPDATE
-          SET score = EXCLUDED.score, method = EXCLUDED.method
-        `;
+    // Delete existing fuzzy rows (not manual) and insert new matches using batch API
+    let deleted = 0;
+    while (true) {
+      const result = await pb.collection('ean_to_aldi').getList(1, 200, { fields: 'id,ean' });
+      if (!result.items.length) break;
+      const toDelete = result.items.filter((r) => !manualEans.has(r.ean as string));
+      if (!toDelete.length) break;
+      // Batch delete
+      const delRequests = toDelete.map((r) => ({
+        method: 'DELETE',
+        url: `/api/collections/ean_to_aldi/records/${r.id}`,
+      }));
+      for (let i = 0; i < delRequests.length; i += 100) {
+        await pb.send('/api/batch', { method: 'POST', body: { requests: delRequests.slice(i, i + 100) } });
       }
-    });
+      deleted += toDelete.length;
+      if (deleted > 50000) break;
+    }
+
+    // Batch insert new matches
+    const insertRequests = matches.map(([ean, sku, score, method]) => ({
+      method: 'POST',
+      url: '/api/collections/ean_to_aldi/records',
+      body: {
+        ean,
+        aldi_sku: sku,
+        score,
+        method,
+        verified_at: new Date().toISOString(),
+      },
+    }));
+    for (let i = 0; i < insertRequests.length; i += 100) {
+      await pb.send('/api/batch', { method: 'POST', body: { requests: insertRequests.slice(i, i + 100) } });
+    }
 
     const completedAt = new Date().toISOString();
     await setMeta('match_status', 'done');

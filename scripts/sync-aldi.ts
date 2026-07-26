@@ -1,6 +1,6 @@
-// One-shot sync of the full Aldi catalogue into PostgreSQL.
+// One-shot sync of the full Aldi catalogue into PocketBase.
 // Run: npm run sync:aldi
-// Idempotent: UPSERTs rows in place using sku as PK.
+// Idempotent: upserts rows in place using sku as unique key.
 //
 // Thin CLI wrapper around the reusable runner in src/lib/sync-runner.ts.
 

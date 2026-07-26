@@ -1,16 +1,13 @@
 // Bootstrap admin seeding.
 //
-// Runs once per cold start as part of ensureSchema(). If ADMIN_EMAIL +
-// ADMIN_PASSWORD are set and no user with that email exists, we
-// create one and promote it to the 'admin' role. Idempotent.
+// Runs once per cold start. If ADMIN_EMAIL + ADMIN_PASSWORD are set and
+// no user with that email exists, we create one and promote it to the
+// 'admin' role. Idempotent.
 //
-// Called by src/lib/db.ts:ensureSchema() (which itself is called
-// before any other query hits the DB). We deliberately use Better
-// Auth's signUpEmail + internalAdapter.updateUserByEmail so the
-// password gets hashed with Better Auth's hasher and the user
-// lives in the same table as every other sign-up.
+// Called lazily on first server request. Uses the PocketBase admin
+// client to manage users.
 
-import { auth } from './auth.js';
+import { ensureAdminAuth } from './pb';
 
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -29,33 +26,33 @@ async function doBootstrap(): Promise<void> {
     return;
   }
 
-  // Everything below touches Better Auth's managed tables (user, session,
-  // etc.). If the database is unreachable, migrations fail, or permissions
-  // are missing, we log the error and move on — the bootstrap must never
-  // reject the schema promise or every subsequent DB query will fail.
   try {
-    const ctx = await auth.$context;
-    const existing = await ctx.internalAdapter.findUserByEmail(email.toLowerCase());
-    const existingRole = (existing as unknown as { role?: string | null } | null)?.role ?? null;
+    const pb = await ensureAdminAuth();
+
+    // Check if user already exists
+    let existing: any = null;
+    try {
+      existing = await pb.collection('users').getFirstListItem(`email="${email.toLowerCase()}"`);
+    } catch {
+      // Not found — will create below
+    }
+
     if (existing) {
-      if (existingRole !== 'admin') {
-        await ctx.internalAdapter.updateUserByEmail(email.toLowerCase(), { role: 'admin' });
+      if (existing.role !== 'admin') {
+        await pb.collection('users').update(existing.id, { role: 'admin' });
         console.log(`[auth] promoted existing user ${email} to admin`);
       }
       return;
     }
 
-    const baseURL =
-      process.env.BETTER_AUTH_URL ||
-      process.env.NEXT_PUBLIC_BETTER_AUTH_URL ||
-      'http://localhost:3000';
-    const b = new Headers({ origin: baseURL });
-    await auth.api.signUpEmail({
-      body: { email: email.toLowerCase(), password, name: 'Admin' },
-      headers: b,
+    // Create new admin user
+    await pb.collection('users').create({
+      email: email.toLowerCase(),
+      password,
+      passwordConfirm: password,
+      name: 'Admin',
+      role: 'admin',
     });
-
-    await ctx.internalAdapter.updateUserByEmail(email.toLowerCase(), { role: 'admin' });
     console.log(`[auth] bootstrap admin created: ${email}`);
   } catch (e: any) {
     console.warn(`[auth] bootstrap admin skipped (non-fatal): ${e?.message ?? e}`);

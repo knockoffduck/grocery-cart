@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
+import { ensureAdminAuth } from '@/lib/pb';
 import { checkBodySize } from '@/lib/bodySize';
 
 export const dynamic = 'force-dynamic';
@@ -14,13 +14,36 @@ export async function POST(request: NextRequest) {
   if (!body.ean || !body.aldi_sku) {
     return NextResponse.json({ error: 'ean and aldi_sku required' }, { status: 400 });
   }
-  const [product] = await sql`SELECT sku FROM aldi_products WHERE sku = ${body.aldi_sku}`;
-  if (!product) return NextResponse.json({ error: 'aldi product not found' }, { status: 404 });
-  await sql`
-    INSERT INTO manual_matches (ean, aldi_sku) VALUES (${body.ean}, ${body.aldi_sku})
-    ON CONFLICT(ean) DO UPDATE SET
-      aldi_sku = EXCLUDED.aldi_sku,
-      created_at = NOW()
-  `;
+
+  const pb = await ensureAdminAuth();
+
+  // Verify the Aldi product exists
+  try {
+    await pb.collection('aldi_products').getFirstListItem(`sku="${body.aldi_sku}"`);
+  } catch {
+    return NextResponse.json({ error: 'aldi product not found' }, { status: 404 });
+  }
+
+  // Upsert: check if manual match already exists for this EAN
+  let existing: any = null;
+  try {
+    existing = await pb.collection('manual_matches').getFirstListItem(`ean="${body.ean}"`);
+  } catch {
+    // Not found
+  }
+
+  if (existing) {
+    await pb.collection('manual_matches').update(existing.id, {
+      aldi_sku: body.aldi_sku,
+      created_at: new Date().toISOString(),
+    });
+  } else {
+    await pb.collection('manual_matches').create({
+      ean: body.ean,
+      aldi_sku: body.aldi_sku,
+      created_at: new Date().toISOString(),
+    });
+  }
+
   return NextResponse.json({ ok: true, ean: body.ean, aldi_sku: body.aldi_sku });
 }

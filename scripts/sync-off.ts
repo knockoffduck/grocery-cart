@@ -2,8 +2,8 @@
 // Iterates the Aldi brand list, queries OFF for that brand, and persists results.
 // Private-label Aldi brands (which OFF won't have) are silently skipped.
 
-import { sql, setMeta, tx } from '../src/lib/db.js';
-import { proxyFetch } from '../src/lib/proxy.js';
+import { ensureAdminAuth, setMeta } from '../src/lib/pb';
+import { proxyFetch } from '../src/lib/proxy';
 
 const OFF_BASE = 'https://world.openfoodfacts.org';
 const PAGE_SIZE = 100;
@@ -27,33 +27,62 @@ type OffRow = {
 function toRow(p: OffRow) {
   return {
     ean: p.code ?? '',
-    product_name: p.product_name ?? p.product_name_en ?? null,
-    brand: p.brands ?? (p.brands_tags?.[0] ?? null),
-    quantity: p.quantity ?? null,
+    product_name: p.product_name ?? p.product_name_en ?? '',
+    brand: p.brands ?? (p.brands_tags?.[0] ?? ''),
+    quantity: p.quantity ?? '',
     categories: p.categories ?? (p.categories_tags ?? []).join(','),
-    image_url: p.image_small_url ?? p.image_url ?? null,
+    image_url: p.image_small_url ?? p.image_url ?? '',
     countries: (p.countries_tags ?? []).join(','),
   };
 }
 
-const insert = async (row: ReturnType<typeof toRow>) => {
-  await sql`
-    INSERT INTO off_products (ean, product_name, brand, quantity, categories, image_url, countries)
-    VALUES (${row.ean}, ${row.product_name}, ${row.brand}, ${row.quantity},
-            ${row.categories}, ${row.image_url}, ${row.countries})
-    ON CONFLICT (ean) DO UPDATE SET
-      product_name = EXCLUDED.product_name,
-      brand = EXCLUDED.brand,
-      quantity = EXCLUDED.quantity,
-      categories = EXCLUDED.categories,
-      image_url = EXCLUDED.image_url,
-      countries = EXCLUDED.countries
-  `;
+const upsert = async (row: ReturnType<typeof toRow>) => {
+  const pb = await ensureAdminAuth();
+  let existing: any = null;
+  try {
+    existing = await pb.collection('off_products').getFirstListItem(`ean="${row.ean}"`);
+  } catch {
+    // Not found
+  }
+
+  if (existing) {
+    await pb.collection('off_products').update(existing.id, row);
+  } else {
+    await pb.collection('off_products').create(row);
+  }
+};
+
+const upsertBatchOff = async (rows: ReturnType<typeof toRow>[]) => {
+  if (!rows.length) return;
+  const pb = await ensureAdminAuth();
+
+  // Find which EANs already exist
+  const eans = rows.map((r) => r.ean);
+  const existingMap = new Map<string, string>();
+  const chunks: string[][] = [];
+  for (let i = 0; i < eans.length; i += 50) chunks.push(eans.slice(i, i + 50));
+  for (const chunk of chunks) {
+    const filter = chunk.map((e) => `ean="${e}"`).join('||');
+    const result = await pb.collection('off_products').getList(1, 50, { filter, fields: 'id,ean' });
+    for (const r of result.items) existingMap.set(r.ean as string, r.id);
+  }
+
+  // Build batch requests
+  const requests = rows.map((row) => {
+    const existingId = existingMap.get(row.ean);
+    if (existingId) {
+      return { method: 'PATCH', url: `/api/collections/off_products/records/${existingId}`, body: row };
+    }
+    return { method: 'POST', url: '/api/collections/off_products/records', body: row };
+  });
+
+  for (let i = 0; i < requests.length; i += 100) {
+    const batch = requests.slice(i, i + 100);
+    await pb.send('/api/batch', { method: 'POST', body: { requests: batch } });
+  }
 };
 
 async function fetchByBrand(brand: string, page: number): Promise<{ products: OffRow[]; count: number }> {
-  // OFF uses brands_tags like "haribo" (slug form). The `brands` field is free-text.
-  // Filter by brands_tags to be precise; we also constrain to AU for relevance.
   const params = new URLSearchParams({
     action: 'process',
     json: '1',
@@ -64,19 +93,13 @@ async function fetchByBrand(brand: string, page: number): Promise<{ products: Of
     fields: 'code,product_name,brands,brands_tags,quantity,categories,categories_tags,image_url,countries_tags',
   });
   const url = `${OFF_BASE}/api/v2/search?${params}`;
-  // proxyFetch already retries on 429/502/503 and OFF's HTML 200 ban page,
-  // and rotates through the proxy pool. Direct fallback happens inside it.
   const res = await proxyFetch(url, {
     headers: { 'User-Agent': 'aldi-cart/0.1 (homelab price tracker)' },
     maxProxyRetries: 5,
   });
   if (!res.ok) {
-    // OFF's 503 page is a giant HTML document. Don't dump it.
     throw new Error(`OFF ${res.status} (body suppressed; content-type: ${res.headers.get('content-type') || 'unset'})`);
   }
-  // Belt-and-braces: if a 200 response is HTML, OFF is throttling us with a
-  // ban page even though proxyFetch let it through (race: it could be a content-type
-  // header mis-set). Bail out gracefully rather than crashing on JSON parse.
   const ct = res.headers.get('content-type') ?? '';
   if (!ct.includes('json')) {
     throw new Error(`OFF returned non-JSON (content-type: ${ct || 'unset'})`);
@@ -86,16 +109,26 @@ async function fetchByBrand(brand: string, page: number): Promise<{ products: Of
 }
 
 async function loadBrands(): Promise<string[]> {
-  const rows = (await sql`
-    SELECT DISTINCT brand_name FROM aldi_products
-    WHERE brand_name IS NOT NULL AND brand_name != ''
-    ORDER BY brand_name
-  `) as { brand_name: string }[];
-  const brands = rows.map((r) => r.brand_name.trim()).filter(Boolean);
-  if (brands.length === 0) {
-    throw new Error('No brands in aldi_products table. Run `npm run sync:aldi` first.');
+  const pb = await ensureAdminAuth();
+  const brands = new Set<string>();
+  let page = 1;
+  while (true) {
+    const result = await pb.collection('aldi_products').getList(page, 500, {
+      fields: 'brand_name',
+      filter: 'brand_name != ""',
+    });
+    for (const r of result.items) {
+      const b = (r.brand_name as string)?.trim();
+      if (b) brands.add(b);
+    }
+    if (page >= result.totalPages) break;
+    page++;
   }
-  return brands;
+  const sorted = [...brands].sort();
+  if (sorted.length === 0) {
+    throw new Error('No brands in aldi_products collection. Run `npm run sync:aldi` first.');
+  }
+  return sorted;
 }
 
 async function syncOffByBrand(): Promise<{ brands: number; products: number; elapsedMs: number }> {
@@ -104,12 +137,6 @@ async function syncOffByBrand(): Promise<{ brands: number; products: number; ela
 
   const brands = await loadBrands();
   console.log(`[off-sync] querying ${brands.length} Aldi brands`);
-
-  const writeMany = async (rows: ReturnType<typeof toRow>[]) => {
-    await tx(async (s) => {
-      for (const r of rows) if (r.ean) await insert(r);
-    });
-  };
 
   let totalProducts = 0;
   let successfulBrands = 0;
@@ -125,7 +152,7 @@ async function syncOffByBrand(): Promise<{ brands: number; products: number; ela
         const rows = products
           .map(toRow)
           .filter((r) => r.ean && r.ean.length >= 8 && r.ean.length <= 14);
-        await writeMany(rows);
+        await upsertBatchOff(rows);
         brandTotal += rows.length;
         if (products.length < PAGE_SIZE) break;
         await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));

@@ -1,6 +1,7 @@
-// Webshare proxy pool with round-robin rotation and transparent direct fallback.
+
+// Webshare proxy pool with round-robin rotation. Proxies only — no direct fallback.
 // Reads proxies from ./proxies.json (format: ip:port:user:pass) and rotates per request.
-// Set ALDI_PROXY=off to force direct connection.
+// Set ALDI_PROXY=off to force direct connection (dev only).
 
 import { ProxyAgent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import { readFileSync, existsSync } from 'node:fs';
@@ -111,7 +112,7 @@ export async function proxyFetch(
   opts: { headers?: Record<string, string>; signal?: AbortSignal; maxProxyRetries?: number; allowDirect?: boolean } = {},
 ): Promise<Response> {
   const u = new URL(url);
-  const allowDirect = opts.allowDirect ?? true;
+  const allowDirect = opts.allowDirect ?? false;
   const headers = opts.headers;
 
   // undici and the global fetch return nominally different Response types but
@@ -157,7 +158,7 @@ export async function proxyFetch(
     console.warn(`[proxy] all ${tried.size} proxy tries failed for ${u.host}; falling back to direct. last=${(lastErr as Error)?.message}`);
     return fetchDirect(url, { headers, signal: opts.signal });
   }
-  throw lastErr ?? new Error('all proxies failed and direct fallback disabled');
+  throw lastErr ?? new Error(`all ${tried.size} proxies failed for ${u.host} (no direct fallback)`);
 }
 
 async function looksLikeRateLimit(res: Response): Promise<boolean> {

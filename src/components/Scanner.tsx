@@ -855,6 +855,21 @@ function ScanResult({
   }
 
   if (match.matched && match.best && !replaceMode) {
+    // When the user accepts an auto-match ("Back to cart"), persist it as a
+    // manual match so real-world scans reinforce the database. This makes
+    // approved scans take precedence over fuzzy matches on future lookups.
+    function approveAndGoBack() {
+      if (match.best) {
+        void fetch("/api/manual-match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ean: match.ean, aldi_sku: match.best.sku }),
+        }).catch(() => {});
+        void upsertCachedEanMapping(match.ean, match.best.sku).catch(() => {});
+      }
+      onScanned?.();
+    }
+
     return (
       <div className="bg-white rounded-xl border border-aldi-success overflow-hidden">
         <div className="bg-aldi-success/10 px-4 py-2 text-aldi-success text-sm font-semibold flex items-center gap-2">
@@ -894,10 +909,10 @@ function ScanResult({
             Wrong item?
           </button>
           <button
-            onClick={onScanned}
+            onClick={approveAndGoBack}
             className="py-3 text-sm font-semibold text-aldi-blue border-l border-aldi-border hover:bg-aldi-bg transition"
           >
-            Back to cart
+            Confirm &amp; continue
           </button>
         </div>
       </div>

@@ -1,36 +1,48 @@
 import { NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
+import { ensureAdminAuth } from '@/lib/pb';
 
 export const dynamic = 'force-dynamic';
 
 // GET /api/catalogue/status
 // Lightweight endpoint to check whether the server catalogue is newer than
-// the client's cached version. Returns 200 with metadata. The client uses
-// this to decide whether to fetch the full /api/catalogue/dump.
+// the client's cached version.
 export async function GET() {
-  const [row] = await sql<{
-    last_match: string | null;
-    last_manual: string | null;
-    product_count: number;
-    fuzzy_count: number;
-    manual_count: number;
-  }[]>`
-    SELECT
-      (SELECT MAX(verified_at) FROM ean_to_aldi) AS last_match,
-      (SELECT MAX(created_at) FROM manual_matches) AS last_manual,
-      (SELECT COUNT(*)::int FROM aldi_products) AS product_count,
-      (SELECT COUNT(*)::int FROM ean_to_aldi) AS fuzzy_count,
-      (SELECT COUNT(*)::int FROM manual_matches) AS manual_count
-  `;
+  const pb = await ensureAdminAuth();
 
-  const last_sync = [row.last_match, row.last_manual]
+  const [productRes, fuzzyRes, manualRes] = await Promise.all([
+    pb.collection('aldi_products').getList(1, 1, { fields: 'id' }),
+    pb.collection('ean_to_aldi').getList(1, 1, { fields: 'id' }),
+    pb.collection('manual_matches').getList(1, 1, { fields: 'id' }),
+  ]);
+
+  // Get last sync timestamps
+  let lastMatch: string | null = null;
+  let lastManual: string | null = null;
+
+  try {
+    const latestMatch = await pb.collection('ean_to_aldi').getList(1, 1, {
+      sort: '-verified_at',
+      fields: 'verified_at',
+    });
+    if (latestMatch.items.length) lastMatch = latestMatch.items[0].verified_at as string;
+  } catch { /* ignore */ }
+
+  try {
+    const latestManual = await pb.collection('manual_matches').getList(1, 1, {
+      sort: '-created_at',
+      fields: 'created_at',
+    });
+    if (latestManual.items.length) lastManual = latestManual.items[0].created_at as string;
+  } catch { /* ignore */ }
+
+  const last_sync = [lastMatch, lastManual]
     .filter(Boolean)
     .sort()
     .reverse()[0] ?? null;
 
   return NextResponse.json({
-    product_count: row.product_count,
-    ean_count: row.fuzzy_count + row.manual_count,
+    product_count: productRes.totalItems,
+    ean_count: fuzzyRes.totalItems + manualRes.totalItems,
     last_sync,
   }, {
     headers: { 'Cache-Control': 'no-store' },

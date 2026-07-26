@@ -1,30 +1,25 @@
 // Sync runner for the Aldi v3 catalogue.
 //
-// Wraps scripts/sync-aldi.ts's logic so the admin page can trigger a
+// Wraps the Aldi API fetch logic so the admin page can trigger a
 // background sync, poll progress, and chain an OFF->Aldi match after
 // completion. The CLI `npm run sync:aldi` still works and uses the
 // same code path.
 //
-// Progress is written to the `meta` table:
+// Progress is written to the `meta` collection:
 //   - aldi_sync_status       ∈ 'running' | 'done' | 'error'
 //   - aldi_sync_started_at   ISO timestamp
 //   - aldi_sync_processed    integer count of products written so far
 //   - aldi_sync_total        integer total from the first page
 //   - aldi_sync_completed_at ISO timestamp (set on success)
 //   - aldi_sync_error        string message (set on failure)
-//
-// `runAldiSync` is non-blocking from the caller's perspective: it
-// writes status='running', then awaits the work. The admin server
-// action calls it via `void` (fire-and-forget) so the HTTP response
-// returns immediately.
 
-import { sql, setMeta } from './db.js';
+import { ensureAdminAuth, setMeta, getMeta } from './pb';
 import {
   searchProducts,
   pickPrimaryImage,
   type AldiProduct,
-} from './aldi.js';
-import { runMatch } from './match-runner.js';
+} from './aldi';
+import { runMatch } from './match-runner';
 
 const CONCURRENCY = 4;
 const BATCH_SIZE = 60;
@@ -34,59 +29,52 @@ function toRow(p: AldiProduct) {
   return {
     sku: p.sku,
     name: p.name,
-    brand_name: p.brandName ?? null,
-    slug: p.urlSlugText,
-    selling_size: p.sellingSize ?? null,
+    brand_name: p.brandName ?? '',
+    slug: p.urlSlugText ?? '',
+    selling_size: p.sellingSize ?? '',
     price_cents: p.price?.amount ?? null,
     price_comparison_cents: p.price?.comparison ?? null,
-    price_comparison_display: p.price?.comparisonDisplay ?? null,
+    price_comparison_display: p.price?.comparisonDisplay ?? '',
     currency: p.price?.currencyCode ?? 'AUD',
     categories_json: JSON.stringify(p.categories ?? []),
-    primary_image: pickPrimaryImage(p),
+    primary_image: pickPrimaryImage(p) ?? '',
     assets_json: JSON.stringify(p.assets ?? []),
-    not_for_sale: p.notForSale ? 1 : 0,
-    discontinued: p.discontinued ? 1 : 0,
-    weight_type: p.weightType ?? null,
+    not_for_sale: p.notForSale ? true : false,
+    discontinued: p.discontinued ? true : false,
+    weight_type: p.weightType ?? '',
     raw_json: JSON.stringify(p),
+    synced_at: new Date().toISOString(),
   };
 }
 
-const insertBatch = async (
-  rows: ReturnType<typeof toRow>[],
-  s?: any,
-): Promise<void> => {
-  const db = s ?? sql;
-  for (const row of rows) {
-    await db`
-      INSERT INTO aldi_products
-        (sku, name, brand_name, slug, selling_size, price_cents, price_comparison_cents,
-         price_comparison_display, currency, categories_json, primary_image, assets_json,
-         not_for_sale, discontinued, weight_type, raw_json, synced_at)
-      VALUES
-        (${row.sku}, ${row.name}, ${row.brand_name}, ${row.slug}, ${row.selling_size},
-         ${row.price_cents}, ${row.price_comparison_cents},
-         ${row.price_comparison_display}, ${row.currency}, ${row.categories_json},
-         ${row.primary_image}, ${row.assets_json},
-         ${row.not_for_sale}, ${row.discontinued}, ${row.weight_type}, ${row.raw_json},
-         NOW())
-      ON CONFLICT (sku) DO UPDATE SET
-        name = EXCLUDED.name,
-        brand_name = EXCLUDED.brand_name,
-        slug = EXCLUDED.slug,
-        selling_size = EXCLUDED.selling_size,
-        price_cents = EXCLUDED.price_cents,
-        price_comparison_cents = EXCLUDED.price_comparison_cents,
-        price_comparison_display = EXCLUDED.price_comparison_display,
-        currency = EXCLUDED.currency,
-        categories_json = EXCLUDED.categories_json,
-        primary_image = EXCLUDED.primary_image,
-        assets_json = EXCLUDED.assets_json,
-        not_for_sale = EXCLUDED.not_for_sale,
-        discontinued = EXCLUDED.discontinued,
-        weight_type = EXCLUDED.weight_type,
-        raw_json = EXCLUDED.raw_json,
-        synced_at = NOW()
-    `;
+const upsertBatch = async (rows: ReturnType<typeof toRow>[]): Promise<void> => {
+  const pb = await ensureAdminAuth();
+  if (!rows.length) return;
+
+  // Find which SKUs already exist (batch query)
+  const skus = rows.map((r) => r.sku);
+  const existingMap = new Map<string, string>(); // sku -> record id
+  const chunks: string[][] = [];
+  for (let i = 0; i < skus.length; i += 50) chunks.push(skus.slice(i, i + 50));
+  for (const chunk of chunks) {
+    const filter = chunk.map((s) => `sku="${s}"`).join('||');
+    const result = await pb.collection('aldi_products').getList(1, 50, { filter, fields: 'id,sku' });
+    for (const r of result.items) existingMap.set(r.sku as string, r.id);
+  }
+
+  // Build batch requests using PocketBase batch API
+  const requests = rows.map((row) => {
+    const existingId = existingMap.get(row.sku);
+    if (existingId) {
+      return { method: 'PATCH', url: `/api/collections/aldi_products/records/${existingId}`, body: row };
+    }
+    return { method: 'POST', url: '/api/collections/aldi_products/records', body: row };
+  });
+
+  // Send in batches of 100 (PB batch limit)
+  for (let i = 0; i < requests.length; i += 100) {
+    const batch = requests.slice(i, i + 100);
+    await pb.send('/api/batch', { method: 'POST', body: { requests: batch } });
   }
 };
 
@@ -127,39 +115,31 @@ export type SyncProgress = {
   error: string | null;
 };
 
-/** Read the current sync progress from the meta table. */
+/** Read the current sync progress from the meta collection. */
 export async function getSyncProgress(): Promise<SyncProgress> {
-  const rows = await sql<{ key: string; value: string }[]>`
-    SELECT key, value FROM meta WHERE key IN (
-      'aldi_sync_status',
-      'aldi_sync_processed',
-      'aldi_sync_total',
-      'aldi_sync_started_at',
-      'aldi_sync_completed_at',
-      'aldi_sync_error'
-    )
-  `;
-  const map = new Map<string, string>();
-  for (const r of rows) map.set(r.key, r.value);
+  const [status, processed, total, startedAt, completedAt, error] = await Promise.all([
+    getMeta('aldi_sync_status'),
+    getMeta('aldi_sync_processed'),
+    getMeta('aldi_sync_total'),
+    getMeta('aldi_sync_started_at'),
+    getMeta('aldi_sync_completed_at'),
+    getMeta('aldi_sync_error'),
+  ]);
   return {
-    status: (map.get('aldi_sync_status') as SyncProgress['status']) ?? 'idle',
-    processed: parseInt(map.get('aldi_sync_processed') ?? '0', 10),
-    total: parseInt(map.get('aldi_sync_total') ?? '0', 10),
-    startedAt: map.get('aldi_sync_started_at') ?? null,
-    completedAt: map.get('aldi_sync_completed_at') ?? null,
-    error: map.get('aldi_sync_error') ?? null,
+    status: (status as SyncProgress['status']) ?? 'idle',
+    processed: parseInt(processed ?? '0', 10),
+    total: parseInt(total ?? '0', 10),
+    startedAt: startedAt ?? null,
+    completedAt: completedAt ?? null,
+    error: error ?? null,
   };
 }
 
 /**
  * Run a full Aldi catalogue sync, writing progress to `meta` so the
- * admin UI can poll. Throws on failure (the caller decides whether
- * to log, retry, or chain a match pass).
+ * admin UI can poll. Throws on failure.
  *
- * After successful completion, the function ALSO triggers a
- * `runMatch()` pass (which preserves manual matches). Pass
- * `runMatchAfter: false` to opt out (e.g. from the dedicated
- * `npm run match` CLI).
+ * After successful completion, also triggers a `runMatch()` pass.
  */
 export async function runAldiSync(
   opts: { runMatchAfter?: boolean; log?: (msg: string) => void } = {},
@@ -183,10 +163,7 @@ export async function runAldiSync(
 
     let processed = 0;
 
-    const writeMany = (rows: ReturnType<typeof toRow>[]) =>
-      sql.begin((s) => insertBatch(rows, s));
-
-    await writeMany(first.items.map(toRow));
+    await upsertBatch(first.items.map(toRow));
     processed += first.items.length;
     await setMeta('aldi_sync_processed', String(processed));
     log(`[aldi-sync] page 1/${totalPages} -> ${first.items.length} items`);
@@ -199,7 +176,7 @@ export async function runAldiSync(
         const offset = queue.shift();
         if (offset === undefined) return;
         const { items } = await fetchPage(offset);
-        await writeMany(items.map(toRow));
+        await upsertBatch(items.map(toRow));
         processed += items.length;
         await setMeta('aldi_sync_processed', String(processed));
         if (processed % 300 < BATCH_SIZE) {
@@ -222,8 +199,6 @@ export async function runAldiSync(
         const result = await runMatch({ log });
         matched = result.matches;
       } catch (e: any) {
-        // Match is best-effort here. We log but don't fail the sync
-        // status; an admin can re-run match from the CLI if needed.
         log(`[aldi-sync] match pass failed: ${e.message}`);
       }
     }
@@ -238,4 +213,4 @@ export async function runAldiSync(
 
 // Re-export the OFF->Aldi matcher from this module so the admin
 // trigger (and the CLI) have a single import.
-export { runMatch } from './match-runner.js';
+export { runMatch } from './match-runner';

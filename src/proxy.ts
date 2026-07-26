@@ -11,15 +11,14 @@
 //   - "Always verify authentication and authorization inside each
 //     Server Function rather than relying on Proxy alone."
 //
-// So this file only reads the session cookie's *presence* (Better Auth
-// signs the value; we don't need to decrypt it here).
+// So this file only reads the session cookie's *presence* (PocketBase
+// signs the JWT; we don't need to decrypt it here).
 
 import { NextResponse, type NextRequest } from 'next/server';
 
-// Better Auth's default session cookie name. We set it via the
-// `advanced.useSecureCookies` config; the name doesn't change between
-// dev and prod, only the `Secure` flag.
-const SESSION_COOKIE = 'better-auth.session_token';
+// PocketBase JWT token cookie name. Set by the login/signup server
+// actions after successful authentication.
+const SESSION_COOKIE = 'pb_token';
 
 const isAdminPath = (path: string) =>
   path === '/admin' || path.startsWith('/admin/');

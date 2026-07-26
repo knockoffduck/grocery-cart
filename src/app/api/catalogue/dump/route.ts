@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { headers } from 'next/headers';
-import { sql } from '@/lib/db';
+import { ensureAdminAuth } from '@/lib/pb';
 import { formatProduct } from '@/lib/format';
 import { rateLimit } from '@/lib/rateLimit';
 
@@ -19,54 +19,81 @@ export async function GET() {
       { status: 429, headers: { 'Retry-After': String(Math.ceil(limit.retryAfterMs / 1000)) } },
     );
   }
-  const products = await sql<{
-    sku: string;
-    name: string;
-    brand_name: string | null;
-    selling_size: string | null;
-    price_cents: number | null;
-    primary_image: string | null;
-    slug: string | null;
-  }[]>`
-    SELECT sku, name, brand_name, selling_size, price_cents, primary_image, slug
-    FROM aldi_products
-  `;
 
-  // Build a single EAN -> SKU map covering manual + fuzzy matches. Clients
-  // only need to know the SKU to look up a product in the products[] array.
-  const eanRows = await sql<{ ean: string; aldi_sku: string }[]>`
-    SELECT ean, aldi_sku FROM ean_to_aldi
-    UNION
-    SELECT ean, aldi_sku FROM manual_matches
-  `;
+  const pb = await ensureAdminAuth();
 
-  // Compress the EAN map to a single string. The client parses it back.
-  // Format: "ean1,sku1;ean2,sku2;..."
-  const eanMap = eanRows.map((r) => `${r.ean},${r.aldi_sku}`).join(';');
+  // Fetch all products (paginated)
+  const products: any[] = [];
+  let page = 1;
+  const perPage = 500;
+  while (true) {
+    const result = await pb.collection('aldi_products').getList(page, perPage, {
+      fields: 'sku,name,brand_name,selling_size,price_cents,primary_image,slug',
+    });
+    products.push(...result.items);
+    if (page >= result.totalPages) break;
+    page++;
+  }
 
-  const [sync] = await sql<{ last_match: string | null; last_manual: string | null }[]>`
-    SELECT
-      (SELECT MAX(verified_at) FROM ean_to_aldi) AS last_match,
-      (SELECT MAX(created_at) FROM manual_matches) AS last_manual
-  `;
+  // Fetch all EAN mappings (fuzzy + manual)
+  const eanPairs: string[] = [];
 
-  const last_sync = [sync.last_match, sync.last_manual]
-    .filter(Boolean)
-    .sort()
-    .reverse()[0] ?? null;
+  // ean_to_aldi
+  page = 1;
+  while (true) {
+    const result = await pb.collection('ean_to_aldi').getList(page, perPage, {
+      fields: 'ean,aldi_sku',
+    });
+    for (const r of result.items) {
+      eanPairs.push(`${r.ean},${r.aldi_sku}`);
+    }
+    if (page >= result.totalPages) break;
+    page++;
+  }
+
+  // manual_matches
+  page = 1;
+  while (true) {
+    const result = await pb.collection('manual_matches').getList(page, perPage, {
+      fields: 'ean,aldi_sku',
+    });
+    for (const r of result.items) {
+      eanPairs.push(`${r.ean},${r.aldi_sku}`);
+    }
+    if (page >= result.totalPages) break;
+    page++;
+  }
+
+  // Deduplicate EAN pairs (manual matches may overlap with fuzzy)
+  const eanMap = [...new Set(eanPairs)].join(';');
+
+  // Get last sync timestamp
+  let last_sync: string | null = null;
+  try {
+    const latestMatch = await pb.collection('ean_to_aldi').getList(1, 1, {
+      sort: '-verified_at',
+      fields: 'verified_at',
+    });
+    const latestManual = await pb.collection('manual_matches').getList(1, 1, {
+      sort: '-created_at',
+      fields: 'created_at',
+    });
+    const timestamps = [
+      latestMatch.items[0]?.verified_at as string | undefined,
+      latestManual.items[0]?.created_at as string | undefined,
+    ].filter(Boolean).sort().reverse();
+    last_sync = timestamps[0] ?? null;
+  } catch { /* ignore */ }
 
   return NextResponse.json({
     version: Date.now(),
     product_count: products.length,
-    ean_count: eanRows.length,
+    ean_count: eanMap ? eanMap.split(';').length : 0,
     last_sync,
     products: products.map(formatProduct),
     ean_map: eanMap,
   }, {
     headers: {
-      // Encourage the browser to cache for a short time so rapid re-syncs
-      // don't hammer the server. The client uses version + last_sync to
-      // decide when to refetch.
       'Cache-Control': 'public, max-age=60',
     },
   });

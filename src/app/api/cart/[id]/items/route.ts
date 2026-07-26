@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
+import { ensureAdminAuth } from '@/lib/pb';
 import { checkBodySize } from '@/lib/bodySize';
 
 export const dynamic = 'force-dynamic';
@@ -15,31 +15,58 @@ export async function POST(request: Request, ctx: RouteContext<'/api/cart/[id]/i
   const body = (await request.json().catch(() => ({}))) as { sku?: string; quantity?: number };
   if (!body.sku) return NextResponse.json({ error: 'sku required' }, { status: 400, headers: { 'Cache-Control': 'no-store' } });
   const qty = Math.max(1, Math.floor(body.quantity ?? 1));
-  const [cart] = await sql`SELECT id FROM carts WHERE id = ${id}`;
-  if (!cart) return NextResponse.json({ error: 'cart not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
-  const [existing] = await sql<{ quantity: number }[]>`
-    SELECT quantity FROM cart_items WHERE cart_id = ${id} AND aldi_sku = ${body.sku}
-  `;
-  if (existing) {
-    await sql`
-      UPDATE cart_items SET quantity = quantity + ${qty}, added_at = NOW() WHERE cart_id = ${id} AND aldi_sku = ${body.sku}
-    `;
-  } else {
-    await sql`
-      INSERT INTO cart_items (cart_id, aldi_sku, quantity) VALUES (${id}, ${body.sku}, ${qty})
-    `;
+
+  const pb = await ensureAdminAuth();
+
+  // Verify cart exists
+  let cart: any;
+  try {
+    cart = await pb.collection('carts').getFirstListItem(`cart_id="${id}"`);
+  } catch {
+    return NextResponse.json({ error: 'cart not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
   }
-  await sql`UPDATE carts SET updated_at = NOW() WHERE id = ${id}`;
+
+  // Check if item already exists in cart
+  let existing: any = null;
+  try {
+    existing = await pb.collection('cart_items').getFirstListItem(`cart_id="${id}" && aldi_sku="${body.sku}"`);
+  } catch {
+    // Not found — will create below
+  }
+
+  if (existing) {
+    await pb.collection('cart_items').update(existing.id, {
+      quantity: existing.quantity + qty,
+      added_at: new Date().toISOString(),
+    });
+  } else {
+    await pb.collection('cart_items').create({
+      cart_id: id,
+      aldi_sku: body.sku,
+      quantity: qty,
+      added_at: new Date().toISOString(),
+    });
+  }
+
+  // Update cart's updated_at
+  await pb.collection('carts').update(cart.id, { updated_at: new Date().toISOString() });
+
   return NextResponse.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
 // DELETE /api/cart/:id/items
 // Remove all items from a cart but keep the cart row (and its id) intact.
-// The id stays the same so the client doesn't need to mint a new one and
-// re-render the whole app — it just sees an empty cart. Used by the
-// "Clear cart" button in the UI.
 export async function DELETE(_request: Request, ctx: RouteContext<'/api/cart/[id]/items'>) {
   const { id } = await ctx.params;
-  await sql`DELETE FROM cart_items WHERE cart_id = ${id}`;
+  const pb = await ensureAdminAuth();
+
+  const itemsResult = await pb.collection('cart_items').getList(1, 500, {
+    filter: `cart_id="${id}"`,
+    fields: 'id',
+  });
+  for (const item of itemsResult.items) {
+    await pb.collection('cart_items').delete(item.id);
+  }
+
   return NextResponse.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
 }

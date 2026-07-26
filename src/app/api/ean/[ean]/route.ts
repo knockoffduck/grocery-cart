@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from '@/lib/db';
+import { ensureAdminAuth } from '@/lib/pb';
 import { formatProduct, pickOff } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
@@ -8,26 +8,40 @@ export const dynamic = 'force-dynamic';
 // Lookup path: manual match -> OFF + fuzzy match -> not matched.
 export async function GET(_request: NextRequest, ctx: RouteContext<'/api/ean/[ean]'>) {
   const { ean } = await ctx.params;
+  const pb = await ensureAdminAuth();
 
   // 1. User-created manual match wins over everything (highest confidence).
-  const [manual] = await sql<any[]>`
-    SELECT ap.*, mm.created_at AS matched_at
-    FROM manual_matches mm
-    JOIN aldi_products ap ON ap.sku = mm.aldi_sku
-    WHERE mm.ean = ${ean}
-  `;
+  let manual: any = null;
+  try {
+    manual = await pb.collection('manual_matches').getFirstListItem(`ean="${ean}"`);
+  } catch {
+    // No manual match
+  }
+
   if (manual) {
-    return NextResponse.json({
-      matched: true,
-      ean,
-      source: 'manual',
-      best: formatProduct(manual),
-      candidates: [{ score: 1.0, method: 'manual', product: formatProduct(manual) }],
-    });
+    // Fetch the matched product
+    try {
+      const product = await pb.collection('aldi_products').getFirstListItem(`sku="${manual.aldi_sku}"`);
+      return NextResponse.json({
+        matched: true,
+        ean,
+        source: 'manual',
+        best: formatProduct(product),
+        candidates: [{ score: 1.0, method: 'manual', product: formatProduct(product) }],
+      });
+    } catch {
+      // Product not found for manual match — fall through
+    }
   }
 
   // 2. Otherwise, try OFF + fuzzy match.
-  const [off] = await sql`SELECT * FROM off_products WHERE ean = ${ean}`;
+  let off: any = null;
+  try {
+    off = await pb.collection('off_products').getFirstListItem(`ean="${ean}"`);
+  } catch {
+    // Not in OFF
+  }
+
   if (!off) {
     return NextResponse.json({
       matched: false,
@@ -37,16 +51,34 @@ export async function GET(_request: NextRequest, ctx: RouteContext<'/api/ean/[ea
     });
   }
 
-  const matches = await sql<any[]>`
-    SELECT e2a.score, e2a.method, ap.*
-    FROM ean_to_aldi e2a
-    JOIN aldi_products ap ON ap.sku = e2a.aldi_sku
-    WHERE e2a.ean = ${ean}
-    ORDER BY e2a.score DESC
-    LIMIT 5
-  `;
+  // 3. Look up fuzzy matches from ean_to_aldi
+  const matchesResult = await pb.collection('ean_to_aldi').getList(1, 5, {
+    filter: `ean="${ean}"`,
+    sort: '-score',
+  });
 
-  if (!matches.length) {
+  if (!matchesResult.items.length) {
+    return NextResponse.json({
+      matched: false,
+      ean,
+      off: pickOff(off),
+      reason: 'EAN in OFF but no Aldi product match',
+      canManualMatch: true,
+    });
+  }
+
+  // Fetch products for each match
+  const candidates = [];
+  for (const m of matchesResult.items) {
+    try {
+      const product = await pb.collection('aldi_products').getFirstListItem(`sku="${m.aldi_sku}"`);
+      candidates.push({ score: m.score, method: m.method, product: formatProduct(product) });
+    } catch {
+      // Product might have been removed
+    }
+  }
+
+  if (!candidates.length) {
     return NextResponse.json({
       matched: false,
       ean,
@@ -60,7 +92,7 @@ export async function GET(_request: NextRequest, ctx: RouteContext<'/api/ean/[ea
     matched: true,
     ean,
     off: pickOff(off),
-    candidates: matches.map((m) => ({ score: m.score, method: m.method, product: formatProduct(m) })),
-    best: formatProduct(matches[0]),
+    candidates,
+    best: candidates[0].product,
   });
 }
