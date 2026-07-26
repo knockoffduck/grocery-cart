@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { searchCachedProducts } from "@/lib/catalogue";
 import { api } from "@/lib/api";
+import { useHaptic } from "@/lib/haptics";
 
 interface CartItem {
   aldi_sku: string;
@@ -41,6 +42,7 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
   // Two-step clear: tap "Clear" once to show the confirm, tap "Confirm" to wipe.
   // Avoids the mistake of accidentally emptying a half-scanned cart.
   const [confirmingClear, setConfirmingClear] = useState(false);
+  const hapticRef = useHaptic<HTMLButtonElement>();
 
   // Per-line actions. The kebab toggles a small inline disclosure so the
   // row stays tappable without crowding the +/- controls.
@@ -233,12 +235,14 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
                     Clear all {itemCount}?
                   </span>
                   <button
+                    ref={hapticRef}
                     onClick={clearCart}
                     className="px-3 py-1.5 rounded-full bg-aldi-danger text-white text-xs font-semibold active:scale-95 transition"
                   >
                     Confirm
                   </button>
                   <button
+                    ref={hapticRef}
                     onClick={() => setConfirmingClear(false)}
                     className="px-3 py-1.5 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:bg-aldi-bg transition"
                   >
@@ -247,6 +251,7 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
                 </div>
               ) : (
                 <button
+                  ref={hapticRef}
                   onClick={() => setConfirmingClear(true)}
                   className="px-3 py-1.5 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:text-aldi-danger hover:border-aldi-danger/40 transition"
                 >
@@ -307,6 +312,7 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
+                      ref={hapticRef}
                       onClick={() => setQty(it.aldi_sku, it.quantity - 1)}
                       className="w-8 h-8 rounded-full border border-aldi-border text-aldi-text hover:bg-aldi-bg active:scale-95 transition"
                       aria-label="Decrease"
@@ -315,6 +321,7 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
                     </button>
                     <span className="w-6 text-center font-semibold tabular-nums">{it.quantity}</span>
                     <button
+                      ref={hapticRef}
                       onClick={() => setQty(it.aldi_sku, it.quantity + 1)}
                       className="w-8 h-8 rounded-full border border-aldi-border text-aldi-text hover:bg-aldi-bg active:scale-95 transition"
                       aria-label="Increase"
@@ -326,6 +333,7 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
                         Remove. We keep the affordance small so the +/- 
                         controls stay the dominant interaction. */}
                     <button
+                      ref={hapticRef}
                       onClick={() => setExpandedSku(open ? null : it.aldi_sku)}
                       className={`w-8 h-8 rounded-full border flex items-center justify-center active:scale-95 transition ${
                         open
@@ -346,12 +354,14 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
                 {open && (
                   <div className="flex items-center gap-2 mt-2 mb-2 pl-[68px]">
                     <button
+                      ref={hapticRef}
                       onClick={() => openSwap(it)}
                       className="px-3 py-1.5 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:border-aldi-danger hover:text-aldi-danger transition"
                     >
                       Wrong scan? Replace…
                     </button>
                     <button
+                      ref={hapticRef}
                       onClick={() => removeItem(it.aldi_sku)}
                       className="px-3 py-1.5 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:border-aldi-danger hover:text-aldi-danger transition"
                     >

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { searchCachedProducts, getCachedStatus } from "@/lib/client/catalogue";
+import { useHaptic } from "@/lib/client/haptics";
 
 interface Product {
   sku: string;
@@ -25,6 +26,7 @@ export function SearchView({ cartId, onAdded }: SearchViewProps) {
   const [adding, setAdding] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hapticRef = useHaptic<HTMLButtonElement>();
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -163,6 +165,7 @@ export function SearchView({ cartId, onAdded }: SearchViewProps) {
                   </div>
                 </div>
                 <button
+                  ref={hapticRef}
                   onClick={() => add(p.sku)}
                   disabled={adding === p.sku}
                   className="px-3 py-1.5 rounded-full bg-aldi-blue text-white text-sm font-semibold hover:bg-aldi-blue-dark active:scale-95 transition disabled:opacity-50"

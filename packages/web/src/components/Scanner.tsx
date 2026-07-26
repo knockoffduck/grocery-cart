@@ -4,6 +4,7 @@ import type { IScannerControls } from "@zxing/browser";
 import { BrowserMultiFormatReader, BarcodeFormat, DecodeHintType, type Result, type Exception } from "@zxing/library";
 import { lookupEanOffline, upsertCachedEanMapping } from "@/lib/catalogue";
 import { api } from "@/lib/api";
+import { useHaptic } from "@/lib/haptics";
 
 interface EanMatch {
   matched: boolean;
@@ -102,6 +103,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
   const lockUntilRef = useRef<number>(0);
   const focusResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [engine, setEngine] = useState<Engine | null>(null);
+  const hapticRef = useHaptic<HTMLButtonElement>();
 
   const [match, setMatch] = useState<EanMatch | null>(null);
   const [status, setStatus] = useState<"starting" | "ready" | "error" | "retrying">("starting");
@@ -717,6 +719,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
         {/* Camera switch button. Top-right, only if there are 2+ cameras. */}
         {videoDevices.length > 1 && status === "ready" && (
           <button
+            ref={hapticRef}
             onClick={(e) => { e.stopPropagation(); cycleCamera(); }}
             className="absolute top-2 right-2 z-20 w-10 h-10 rounded-full bg-black/60 text-white flex items-center justify-center active:scale-95 transition"
             aria-label="Switch camera"
@@ -733,6 +736,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
         {/* Torch button. Bottom-right, only if the device supports it. */}
         {torchSupported && status === "ready" && (
           <button
+            ref={hapticRef}
             onClick={(e) => { e.stopPropagation(); toggleTorch(); }}
             className={`absolute bottom-2 right-2 z-20 w-10 h-10 rounded-full flex items-center justify-center active:scale-95 transition ${
               torchOn ? "bg-aldi-blue text-white" : "bg-black/60 text-white"
@@ -779,6 +783,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
       <div className="p-3 bg-white border-b border-aldi-border flex items-center justify-between gap-2">
         <p className="text-sm text-aldi-text-muted">Point your camera at the barcode. Tap to focus.</p>
         <button
+          ref={hapticRef}
           onClick={onCancel}
           className="px-3 py-1.5 rounded-full border border-aldi-border text-sm font-medium hover:bg-aldi-bg transition"
         >
@@ -842,6 +847,7 @@ function ScanResult({
   // Flips a successful match into the search-and-replace panel. Carries
   // the wrong SKU through to swapItem so the cart line gets removed too.
   const [replaceMode, setReplaceMode] = useState(false);
+  const hapticRef = useHaptic<HTMLButtonElement>();
   useEffect(() => {
     if (match.matched && match.best && cartId && !added) {
       setAdded(true);
@@ -901,6 +907,7 @@ function ScanResult({
         </div>
         <div className="grid grid-cols-2 border-t border-aldi-border">
           <button
+            ref={hapticRef}
             onClick={enterReplaceMode}
             disabled={adding}
             className="py-3 text-sm font-medium text-aldi-text-muted hover:bg-aldi-bg transition disabled:opacity-50"
@@ -908,6 +915,7 @@ function ScanResult({
             Wrong item?
           </button>
           <button
+            ref={hapticRef}
             onClick={approveAndGoBack}
             className="py-3 text-sm font-semibold text-aldi-blue border-l border-aldi-border hover:bg-aldi-bg transition"
           >
@@ -950,6 +958,7 @@ function ScanResult({
               </div>
             </div>
             <button
+              ref={hapticRef}
               onClick={() => { setReplaceMode(false); setManualSearch(""); }}
               className="px-3 py-1.5 rounded-full border border-aldi-border text-xs font-medium text-aldi-text-muted hover:bg-aldi-bg transition"
             >
@@ -973,6 +982,7 @@ function ScanResult({
           adding={adding}
           onPick={(p) => swapItem(match.ean, match.best!.sku, p.sku)}
           emptyHint="No matches."
+          hapticRef={hapticRef}
         />
       </div>
     );
@@ -1009,6 +1019,7 @@ function ScanResult({
         adding={adding}
         onPick={(p) => saveManualMatch(match.ean, p.sku)}
         emptyHint="No matches."
+        hapticRef={hapticRef}
       />
     </div>
   );
@@ -1027,6 +1038,7 @@ interface ProductSearchPanelProps {
   adding: boolean;
   onPick: (p: { sku: string; name: string; brand: string | null; sellingSize: string | null; image: string | null }) => void;
   emptyHint: string;
+  hapticRef?: (el: HTMLButtonElement | null) => void;
 }
 
 function ProductSearchPanel({
@@ -1038,6 +1050,7 @@ function ProductSearchPanel({
   adding,
   onPick,
   emptyHint,
+  hapticRef,
 }: ProductSearchPanelProps) {
   return (
     <div className="bg-white rounded-xl border border-aldi-border p-3">
@@ -1075,6 +1088,7 @@ function ProductSearchPanel({
                 </div>
               </div>
               <button
+                ref={hapticRef}
                 onClick={() => onPick(p)}
                 disabled={adding}
                 className="px-3 py-1.5 rounded-full bg-aldi-blue text-white text-xs font-semibold hover:bg-aldi-blue-dark active:scale-95 transition disabled:opacity-50"

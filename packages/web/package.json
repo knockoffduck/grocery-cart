@@ -11,6 +11,7 @@
     "@aldi-cart/shared": "workspace:*",
     "@zxing/browser": "^0.2.0",
     "@zxing/library": "^0.22.0",
+    "ios-haptics": "^3.1.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.6.0",

@@ -1,5 +1,7 @@
 "use client";
 
+import { useHaptic } from "@/lib/client/haptics";
+
 type Tab = "cart" | "scan" | "search";
 
 interface NavBarProps {
@@ -9,11 +11,14 @@ interface NavBarProps {
 }
 
 export function NavBar({ current, onChange, cartCount = 0 }: NavBarProps) {
+  const hapticRef = useHaptic<HTMLButtonElement>();
+
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 safe-bottom">
       <div className="max-w-2xl mx-auto relative">
         {/* Elevated scan button — the primary action sits above the bar */}
         <button
+          ref={hapticRef}
           onClick={() => onChange("scan")}
           className={
             "absolute left-1/2 -translate-x-1/2 -top-6 w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all active:scale-90 " +
@@ -82,8 +87,11 @@ function TabButton({
   icon: React.ReactNode;
   badge?: number;
 }) {
+  const hapticRef = useHaptic<HTMLButtonElement>();
+
   return (
     <button
+      ref={hapticRef}
       onClick={onClick}
       className={
         "flex-1 flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[11px] font-medium transition-colors relative " +
