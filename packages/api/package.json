@@ -1,0 +1,17 @@
+{
+  "name": "@aldi-cart/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts"
+  },
+  "dependencies": {
+    "@aldi-cart/shared": "workspace:*",
+    "hono": "^4.7.0",
+    "pocketbase": "^0.27.0",
+    "undici": "^8.5.0",
+    "zod": "^3.24.0"
+  }
+}

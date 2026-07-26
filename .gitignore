@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -20,6 +20,7 @@
 # production
 /build
 /dist
+packages/web/dist/
 
 # misc
 .DS_Store
@@ -54,3 +55,5 @@ src/app/globals.compiled.css
 #   cp node_modules/web-wasm-barcode-reader/dist/a.out.{js,wasm} public/
 public/a.out.js
 public/a.out.wasm
+packages/web/public/a.out.js
+packages/web/public/a.out.wasm

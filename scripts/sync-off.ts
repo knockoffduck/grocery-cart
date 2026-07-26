@@ -2,8 +2,8 @@
 // Iterates the Aldi brand list, queries OFF for that brand, and persists results.
 // Private-label Aldi brands (which OFF won't have) are silently skipped.
 
-import { ensureAdminAuth, setMeta } from '../src/lib/pb';
-import { proxyFetch } from '../src/lib/proxy';
+import { ensureAdminAuth, setMeta } from '../packages/api/src/lib/pb';
+import { proxyFetch } from '../packages/api/src/lib/proxy';
 
 const OFF_BASE = 'https://world.openfoodfacts.org';
 const PAGE_SIZE = 100;
@@ -131,12 +131,13 @@ async function loadBrands(): Promise<string[]> {
   return sorted;
 }
 
-async function syncOffByBrand(): Promise<{ brands: number; products: number; elapsedMs: number }> {
+export async function syncOffByBrand(opts: { log?: (msg: string) => void } = {}): Promise<{ brands: number; products: number; elapsedMs: number }> {
+  const log = opts.log ?? ((m: string) => console.log(m));
   const start = Date.now();
-  console.log('[off-sync] starting brand-targeted AU sync');
+  log('[off-sync] starting brand-targeted AU sync');
 
   const brands = await loadBrands();
-  console.log(`[off-sync] querying ${brands.length} Aldi brands`);
+  log(`[off-sync] querying ${brands.length} Aldi brands`);
 
   let totalProducts = 0;
   let successfulBrands = 0;
@@ -161,13 +162,13 @@ async function syncOffByBrand(): Promise<{ brands: number; products: number; ela
       totalProducts += brandTotal;
       if ((i + 1) % 10 === 0 || i === brands.length - 1) {
         const pct = (((i + 1) / brands.length) * 100).toFixed(1);
-        console.log(
+        log(
           `[off-sync] ${i + 1}/${brands.length} brands (${pct}%) | ${successfulBrands} hit | ${totalProducts} products`
         );
       }
     } catch (e: any) {
       failures.push(`${brand}: ${e.message}`);
-      console.warn(`[off-sync] brand "${brand}" failed: ${e.message}`);
+      log(`[off-sync] brand "${brand}" failed: ${e.message}`);
     }
     if (i < brands.length - 1) await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));
   }
@@ -176,9 +177,9 @@ async function syncOffByBrand(): Promise<{ brands: number; products: number; ela
   await setMeta('off_sync_total', String(totalProducts));
   await setMeta('off_sync_brands_hit', String(successfulBrands));
   const elapsedMs = Date.now() - start;
-  console.log(`[off-sync] done: ${totalProducts} products from ${successfulBrands}/${brands.length} brands in ${(elapsedMs / 1000).toFixed(1)}s`);
+  log(`[off-sync] done: ${totalProducts} products from ${successfulBrands}/${brands.length} brands in ${(elapsedMs / 1000).toFixed(1)}s`);
   if (failures.length) {
-    console.log(`[off-sync] ${failures.length} brand failures (logged above)`);
+    log(`[off-sync] ${failures.length} brand failures (logged above)`);
   }
   return { brands: brands.length, products: totalProducts, elapsedMs };
 }

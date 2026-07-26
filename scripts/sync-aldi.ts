@@ -4,7 +4,7 @@
 //
 // Thin CLI wrapper around the reusable runner in src/lib/sync-runner.ts.
 
-import { runAldiSync } from '../src/lib/sync-runner.js';
+import { runAldiSync } from '../packages/api/src/lib/sync-runner';
 
 runAldiSync({ runMatchAfter: false })
   .then((r) => {

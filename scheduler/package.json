@@ -1,0 +1,10 @@
+{
+  "name": "@aldi-cart/scheduler",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@aldi-cart/shared": "workspace:*",
+    "pocketbase": "^0.27.0",
+    "undici": "^8.5.0"
+  }
+}

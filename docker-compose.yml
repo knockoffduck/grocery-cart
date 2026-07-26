@@ -1,132 +1,139 @@
 # =============================================================================
-# Aldi Cart PWA — Dokploy deployment unit
+# Aldi Cart PWA — Dokploy deployment unit (Hono + Vite split)
 # =============================================================================
 #
-# Dokploy consumes this file directly when "Docker Compose" is selected as
-# the build source. It generates the Traefik labels, the volume mounts, and
-# the env-var injection automatically. Override anything in the Dokploy UI
-# without editing this file.
+# Three services:
+#   api       — Hono on Bun (all /api/* routes)
+#   web       — nginx serving the Vite-built React PWA
+#   scheduler — periodic sync pipeline (Aldi → OFF → match)
 #
-# Required runtime env vars (set these in the Dokploy service config, not here):
-#   DATABASE_URL          — Postgres connection string for the external
-#                           database container (e.g. the Dokploy "postgres"
-#                           service on the same network). Schema is
-#                           bootstrapped on first request via src/lib/db.ts.
-#   PROXY_URL             — Webshare rotating proxy URL. Only needed if you
-#                           run `npm run sync:off` (from the host or a
-#                           sidecar) to refresh the OFF EAN matches. The
-#                           running app server does NOT read this var.
-#                           Leave empty in Dokploy and the container still
-#                           starts.
-#   ALDI_SERVICE_POINT    — Optional. Defaults to G452 (Perth Central).
+# Traefik routing (configured in Dokploy):
+#   cart.dvcklab.com/api/*  → api:3001
+#   cart.dvcklab.com/*      → web:80
 #
-# Volumes (persistent across deploys):
-#   aldi-certs   — TLS cert + key for the HTTPS port (optional)
-#
-# Container hardening: the app service runs read-only with all Linux
-# capabilities dropped and no-new-privileges set. The only writable
-# surfaces are the /tmp tmpfs and the /app/.next/cache tmpfs (Next.js
-# build cache). An RCE in the Node process can write to those but cannot
-# write anywhere else or escalate privileges.
+# Required runtime env vars (set in Dokploy service config):
+#   POCKETBASE_ADMIN_EMAIL    — Admin (_superusers) email for PocketBase
+#   POCKETBASE_ADMIN_PASSWORD — Matching password
+#   POCKETBASE_URL            — Optional. Defaults to https://pb.dvcklab.com
+#   ALDI_SERVICE_POINT        — Optional. Defaults to G452
 # =============================================================================
 
 services:
-  app:
+  api:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: aldi-cart:latest
-    container_name: aldi-cart
+      dockerfile: packages/api/Dockerfile
+    image: aldi-cart-api:latest
+    container_name: aldi-cart-api
     restart: unless-stopped
-
-    # Dokploy injects the public hostname + TLS via Traefik labels that
-    # show up in `dokploy config`. We expose the raw HTTP port for Traefik
-    # to forward to. The HTTPS port is left available for direct access
-    # (e.g. over Tailscale) but not exposed publicly.
     ports:
-      - "3000:3000"
-
+      - "3001:3001"
     environment:
-      # Runtime
       - NODE_ENV=production
-      - HTTP_PORT=3000
-      - HTTPS_PORT=7778
-      - HOST=0.0.0.0
-      # Database — required. Set in the Dokploy service env-var UI to the
-      # internal Postgres URL (e.g.
-      # postgresql://postgres:...@database-grocerycart-l0kdmu:5432/grocery-cart).
-      # src/lib/db.ts throws on startup if this is missing. The
-      # `${VAR:?msg}` form makes `docker compose config` fail loudly if
-      # it's unset in the environment Dokploy inherits.
-      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
-      # Sync proxy — optional. Only consumed by `npm run sync:off` (run
-      # from the host or a sidecar); the running app server doesn't read
-      # it. Leave empty in the Dokploy env-var UI and the container
-      # still starts.
-      - PROXY_URL=${PROXY_URL:-}
-      # Aldi service point. Change to your local store's code if needed.
+      - API_PORT=3001
+      - POCKETBASE_ADMIN_EMAIL=${POCKETBASE_ADMIN_EMAIL:?POCKETBASE_ADMIN_EMAIL is required}
+      - POCKETBASE_ADMIN_PASSWORD=${POCKETBASE_ADMIN_PASSWORD:?POCKETBASE_ADMIN_PASSWORD is required}
+      - POCKETBASE_URL=${POCKETBASE_URL:-https://pb.dvcklab.com}
       - ALDI_SERVICE_POINT=${ALDI_SERVICE_POINT:-G452}
-      # Better Auth. BETTER_AUTH_SECRET must be set; the others have
-      # sensible dev defaults. In Dokploy, set BETTER_AUTH_URL to the
-      # public hostname (e.g. https://aldi.example.com) so cookie
-      # domain checks pass.
-      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
-      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-}
-      # Bootstrap admin (optional). If both are set, a user is created
-      # and promoted to 'admin' on the first cold start. Sign-ups
-      # through /signup always get the 'user' role.
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
-      # Next.js bookkeeping
-      - NEXT_TELEMETRY_DISABLED=1
-
-    volumes:
-      # TLS certs for the HTTPS port. Read-only mount of a host directory
-      # OR a named volume populated by an init step. Dokploy lets you bind
-      # this to a host path; for named volumes, populate via the Console.
-      - aldi-certs:/app/certs:ro
-
-    # Health check matches the Dockerfile's HEALTHCHECK directive. Traefik
-    # honours this to know when the container is ready. The runtime image
-    # is Bun-based (no node binary), so this uses `bun -e`.
+      - CORS_ORIGIN=${CORS_ORIGIN:-}
     healthcheck:
-      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
-
-    # Resource limits. The catalogue is 16 MB of SQLite + an in-process
-    # Node runtime. Memory ceiling of 512 MB is generous; lower if you
-    # have other services competing.
+      start_period: 15s
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 256M
         reservations:
-          memory: 128M
-
+          memory: 64M
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
-    # Container hardening. The app only writes to in-memory tmpfs paths
-    # (/tmp, /app/.next/cache) — everything else is read-only. Disabling
-    # Linux capabilities drops the attack surface for an RCE.
     read_only: true
     tmpfs:
       - /tmp
-      - /app/.next/cache
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
 
-volumes:
-  aldi-certs:
-    name: aldi-cart-certs
-  # Named volume for the LAN HTTPS cert. The database lives in a separate
-  # Postgres container on the Dokploy network; this app reads it via
-  # the DATABASE_URL env var and does not persist any state of its own.
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+    image: aldi-cart-web:latest
+    container_name: aldi-cart-web
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # ---------------------------------------------------------------------------
+  # Scheduler — periodic sync pipeline (Aldi → OFF → match)
+  # ---------------------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
+    image: aldi-cart-scheduler:latest
+    container_name: aldi-cart-scheduler
+    restart: unless-stopped
+    ports:
+      - "3002:3001"
+    environment:
+      - NODE_ENV=production
+      - SCHEDULE_PORT=3001
+      - SCHEDULE_INTERVAL_HOURS=${SCHEDULE_INTERVAL_HOURS:-48}
+      - RUN_ON_START=${RUN_ON_START:-false}
+      - POCKETBASE_ADMIN_EMAIL=${POCKETBASE_ADMIN_EMAIL:?POCKETBASE_ADMIN_EMAIL is required}
+      - POCKETBASE_ADMIN_PASSWORD=${POCKETBASE_ADMIN_PASSWORD:?POCKETBASE_ADMIN_PASSWORD is required}
+      - POCKETBASE_URL=${POCKETBASE_URL:-https://pb.dvcklab.com}
+      - PROXY_URL=${PROXY_URL:-}
+      - ALDI_SERVICE_POINT=${ALDI_SERVICE_POINT:-G452}
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

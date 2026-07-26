@@ -7,7 +7,7 @@
 //
 // Thin CLI wrapper around the reusable runner in src/lib/match-runner.ts.
 
-import { runMatch } from '../src/lib/match-runner.js';
+import { runMatch } from '../packages/api/src/lib/match-runner';
 
 runMatch()
   .then((r) => {

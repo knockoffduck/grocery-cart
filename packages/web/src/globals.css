@@ -1,0 +1,159 @@
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+/* Aldi brand: deep blue + orange + white */
+@theme inline {
+  --color-aldi-blue: #0019a5;
+  --color-aldi-blue-dark: #001580;
+  --color-aldi-blue-light: #1a32b8;
+  --color-aldi-orange: #f37920;
+  --color-aldi-yellow: #ffe000;
+  --color-aldi-bg: #f7f8fa;
+  --color-aldi-surface: #ffffff;
+  --color-aldi-text: #0f172a;
+  --color-aldi-text-muted: #64748b;
+  --color-aldi-border: #e2e8f0;
+  --color-aldi-success: #16a34a;
+  --color-aldi-danger: #dc2626;
+}
+
+:root {
+  --background: var(--color-aldi-bg);
+  --foreground: var(--color-aldi-text);
+}
+
+html, body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+button, [role="button"], a, input, select, textarea {
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+}
+
+button {
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* iOS safe areas for the notched iPhone */
+.safe-top { padding-top: env(safe-area-inset-top, 0); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0); }
+
+/* Hide scrollbar but keep scrollable */
+.scrollbar-hidden { scrollbar-width: none; }
+.scrollbar-hidden::-webkit-scrollbar { display: none; }
+
+/* Camera viewport */
+.reader {
+  background: #000;
+  position: relative;
+  overflow: hidden;
+}
+
+.reader video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Animated reticle corners */
+.scan-reticle {
+  position: absolute;
+  inset: 12% 8%;
+  pointer-events: none;
+}
+.scan-reticle::before,
+.scan-reticle::after,
+.scan-reticle > .corner-tl,
+.scan-reticle > .corner-tr,
+.scan-reticle > .corner-bl,
+.scan-reticle > .corner-br {
+  content: "";
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  border-color: rgba(255, 255, 255, 0.85);
+  border-style: solid;
+  border-width: 0;
+  transition: border-color 200ms ease, transform 200ms ease;
+}
+.scan-reticle > .corner-tl { top: 0; left: 0; border-top-width: 3px; border-left-width: 3px; border-top-left-radius: 6px; }
+.scan-reticle > .corner-tr { top: 0; right: 0; border-top-width: 3px; border-right-width: 3px; border-top-right-radius: 6px; }
+.scan-reticle > .corner-bl { bottom: 0; left: 0; border-bottom-width: 3px; border-left-width: 3px; border-bottom-left-radius: 6px; }
+.scan-reticle > .corner-br { bottom: 0; right: 0; border-bottom-width: 3px; border-right-width: 3px; border-bottom-right-radius: 6px; }
+.scan-reticle.success > * { border-color: #16a34a; }
+
+/* Green flash overlay on successful scan */
+.scan-flash {
+  position: absolute;
+  inset: 0;
+  background: #16a34a;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0s;
+}
+.scan-flash.active {
+  opacity: 0.35;
+  transition: opacity 0s;
+}
+
+/* Tap-to-focus indicator */
+@keyframes focus-pulse {
+  0%   { transform: scale(0.6); opacity: 1; }
+  100% { transform: scale(1.2); opacity: 0; }
+}
+.focus-pulse {
+  animation: focus-pulse 0.9s ease-out forwards;
+}
+
+/* Screen transition */
+@keyframes screen-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.screen-enter {
+  animation: screen-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* List row entrance for cart items */
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.row-enter {
+  animation: row-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Badge pop when count changes */
+@keyframes badge-pop {
+  0%   { transform: scale(0.5); }
+  60%  { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+.badge-pop {
+  animation: badge-pop 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Subtle pulse for the scan FAB ring */
+@keyframes fab-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(243, 121, 32, 0.35); }
+  50%      { box-shadow: 0 0 0 6px rgba(243, 121, 32, 0); }
+}
+.fab-ring {
+  animation: fab-ring 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .screen-enter, .row-enter, .badge-pop, .fab-ring, .focus-pulse {
+    animation: none;
+  }
+}
