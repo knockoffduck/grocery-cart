@@ -149,20 +149,16 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
     streamOwnerRef.current = null;
   }, []);
 
+  // Resolve a scanned barcode to a product and surface it for the user to
+  // confirm. We deliberately do NOT add to the cart here — the user must tap
+  // "Add to cart" on the match card (see addToCart). This avoids surprise
+  // additions from mis-scans.
   const handleEan = useCallback(async (ean: string) => {
     try {
       const cached = await lookupEanOffline(ean);
       if (cached) {
         if (cached.matched && cached.best) {
           setMatch({ matched: true, ean, best: cached.best, canManualMatch: false });
-          if (cartId) {
-            await api(`/api/cart/${cartId}/items`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ sku: cached.best.sku, quantity: 1 }),
-            });
-            setTimeout(() => onScanned?.(), 700);
-          }
           return;
         }
       }
@@ -175,15 +171,6 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: EanMatch = await res.json();
       setMatch(data);
-
-      if (data.matched && data.best && cartId) {
-        await api(`/api/cart/${cartId}/items`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sku: data.best.sku, quantity: 1 }),
-        });
-        setTimeout(() => onScanned?.(), 700);
-      }
     } catch (e) {
       setMatch({
         matched: false,
@@ -192,7 +179,34 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
         canManualMatch: true,
       });
     }
-  }, [cartId, onScanned]);
+  }, []);
+
+  // Add the confirmed match to the cart. Called from the match card's
+  // "Add to cart" button. Persists the EAN -> SKU mapping so future scans
+  // resolve correctly, then hands off to the cart view.
+  const addToCart = useCallback(async (m: EanMatch) => {
+    if (!cartId || !m.best || adding) return;
+    setAdding(true);
+    try {
+      const res = await api(`/api/cart/${cartId}/items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sku: m.best.sku, quantity: 1 }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Reinforce the mapping so approved scans take precedence over fuzzy
+      // matches on future lookups. Fire-and-forget.
+      void api("/api/manual-match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ean: m.ean, aldi_sku: m.best.sku }),
+      }).catch(() => {});
+      void upsertCachedEanMapping(m.ean, m.best.sku).catch(() => {});
+      onScanned?.();
+    } finally {
+      setAdding(false);
+    }
+  }, [cartId, adding, onScanned]);
 
   const accept = useCallback((text: string) => {
     const now = Date.now();
@@ -571,21 +585,31 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
     focusAt(t.clientX, t.clientY);
   }
 
-  async function runManualSearch() {
-    const q = manualSearch.trim();
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchSeqRef = useRef(0);
+  // Debounced catalogue search for the manual-match modal. Takes the query
+  // directly (rather than reading `manualSearch` state) so it never operates
+  // on a stale value, and ignores out-of-order responses via a sequence id.
+  const runManualSearch = useCallback((query: string) => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    const q = query.trim();
     if (q.length < 1) {
       setManualResults([]);
+      setSearching(false);
       return;
     }
     setSearching(true);
-    try {
-      const res = await api(`/api/search?q=${encodeURIComponent(q)}&limit=8`);
-      const data = await res.json();
-      setManualResults(data.items ?? []);
-    } finally {
-      setSearching(false);
-    }
-  }
+    const seq = ++searchSeqRef.current;
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await api(`/api/search?q=${encodeURIComponent(q)}&limit=8`);
+        const data = await res.json();
+        if (seq === searchSeqRef.current) setManualResults(data.items ?? []);
+      } finally {
+        if (seq === searchSeqRef.current) setSearching(false);
+      }
+    }, 200);
+  }, []);
 
   // Correct a wrong auto-match (or simply teach the app a new barcode).
   //
@@ -797,6 +821,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
             match={match}
             cartId={cartId}
             onScanned={onScanned}
+            addToCart={addToCart}
             manualSearch={manualSearch}
             setManualSearch={setManualSearch}
             manualResults={manualResults}
@@ -820,11 +845,12 @@ interface ScanResultProps {
   match: EanMatch;
   cartId: string | null;
   onScanned?: () => void;
+  addToCart: (m: EanMatch) => void;
   manualSearch: string;
   setManualSearch: (s: string) => void;
   manualResults: any[];
   searching: boolean;
-  runManualSearch: () => void;
+  runManualSearch: (q: string) => void;
   saveManualMatch: (ean: string, sku: string) => void;
   swapItem: (ean: string | null, wrongSku: string | null, rightSku: string) => void;
   adding: boolean;
@@ -834,6 +860,7 @@ function ScanResult({
   match,
   cartId,
   onScanned,
+  addToCart,
   manualSearch,
   setManualSearch,
   manualResults,
@@ -843,16 +870,10 @@ function ScanResult({
   swapItem,
   adding,
 }: ScanResultProps) {
-  const [added, setAdded] = useState(false);
   // Flips a successful match into the search-and-replace panel. Carries
   // the wrong SKU through to swapItem so the cart line gets removed too.
   const [replaceMode, setReplaceMode] = useState(false);
   const hapticRef = useHaptic<HTMLButtonElement>();
-  useEffect(() => {
-    if (match.matched && match.best && cartId && !added) {
-      setAdded(true);
-    }
-  }, [match, cartId, added]);
 
   function enterReplaceMode() {
     setReplaceMode(true);
@@ -860,28 +881,14 @@ function ScanResult({
   }
 
   if (match.matched && match.best && !replaceMode) {
-    // When the user accepts an auto-match ("Back to cart"), persist it as a
-    // manual match so real-world scans reinforce the database. This makes
-    // approved scans take precedence over fuzzy matches on future lookups.
-    function approveAndGoBack() {
-      if (match.best) {
-        void api("/api/manual-match", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ean: match.ean, aldi_sku: match.best.sku }),
-        }).catch(() => {});
-        void upsertCachedEanMapping(match.ean, match.best.sku).catch(() => {});
-      }
-      onScanned?.();
-    }
-
     return (
-      <div className="bg-white rounded-xl border border-aldi-success overflow-hidden">
-        <div className="bg-aldi-success/10 px-4 py-2 text-aldi-success text-sm font-semibold flex items-center gap-2">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} className="w-4 h-4">
-            <polyline points="20 6 9 17 4 12" />
+      <div className="bg-white rounded-xl border border-aldi-blue overflow-hidden">
+        <div className="bg-aldi-blue/10 px-4 py-2 text-aldi-blue text-sm font-semibold flex items-center gap-2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
-          Added to cart
+          Match found — confirm to add
         </div>
         <div className="flex items-center gap-3 p-3">
           {match.best.image ? (
@@ -916,10 +923,11 @@ function ScanResult({
           </button>
           <button
             ref={hapticRef}
-            onClick={approveAndGoBack}
-            className="py-3 text-sm font-semibold text-aldi-blue border-l border-aldi-border hover:bg-aldi-bg transition"
+            onClick={() => addToCart(match)}
+            disabled={adding || !cartId}
+            className="py-3 text-sm font-semibold text-white bg-aldi-blue border-l border-aldi-border hover:bg-aldi-blue-dark transition disabled:opacity-50"
           >
-            Confirm &amp; continue
+            {adding ? "Adding…" : "Add to cart"}
           </button>
         </div>
       </div>
@@ -974,6 +982,8 @@ function ScanResult({
         </div>
 
         <ProductSearchPanel
+          title="Find the right product"
+          onClose={() => { setReplaceMode(false); setManualSearch(""); }}
           manualSearch={manualSearch}
           setManualSearch={setManualSearch}
           manualResults={manualResults}
@@ -1011,6 +1021,8 @@ function ScanResult({
       </div>
 
       <ProductSearchPanel
+        title="Search the catalogue"
+        onClose={() => onScanned?.()}
         manualSearch={manualSearch}
         setManualSearch={setManualSearch}
         manualResults={manualResults}
@@ -1030,18 +1042,25 @@ function ScanResult({
 // plugged in — saveManualMatch (teaches a new mapping) vs swapItem (also
 // removes a wrong cart line and audits the correction).
 interface ProductSearchPanelProps {
+  title: string;
+  onClose: () => void;
   manualSearch: string;
   setManualSearch: (s: string) => void;
   manualResults: any[];
   searching: boolean;
-  runManualSearch: () => void;
+  runManualSearch: (q: string) => void;
   adding: boolean;
   onPick: (p: { sku: string; name: string; brand: string | null; sellingSize: string | null; image: string | null }) => void;
   emptyHint: string;
   hapticRef?: (el: HTMLButtonElement | null) => void;
 }
 
+// Full-screen modal for picking a product. Results scroll inside the modal
+// rather than pushing the page around, so typing in the search box no longer
+// causes the underlying screen to jump up and down.
 function ProductSearchPanel({
+  title,
+  onClose,
   manualSearch,
   setManualSearch,
   manualResults,
@@ -1052,55 +1071,100 @@ function ProductSearchPanel({
   emptyHint,
   hapticRef,
 }: ProductSearchPanelProps) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Autofocus the search box when the modal opens, and close on Escape.
+  useEffect(() => {
+    inputRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
-    <div className="bg-white rounded-xl border border-aldi-border p-3">
-      <input
-        type="search"
-        value={manualSearch}
-        onChange={(e) => {
-          setManualSearch(e.target.value);
-          runManualSearch();
-        }}
-        placeholder="Search Aldi products…"
-        className="w-full px-3 py-2 rounded-lg bg-aldi-bg border border-aldi-border focus:border-aldi-blue focus:ring-2 focus:ring-aldi-blue/20 outline-none transition"
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
+      <div
+        className="absolute inset-0 bg-black/50"
+        onClick={onClose}
+        aria-hidden="true"
       />
-      {searching ? (
-        <div className="text-sm text-aldi-text-muted py-3 text-center">Searching…</div>
-      ) : manualResults.length > 0 ? (
-        <ul className="mt-2 divide-y divide-aldi-border">
-          {manualResults.map((p) => (
-            <li key={p.sku} className="flex items-center gap-3 py-2">
-              {p.image ? (
-                <img
-                  src={p.image}
-                  alt=""
-                  className="w-10 h-10 object-contain rounded bg-aldi-bg shrink-0"
-                  loading="lazy"
-                  onError={(e) => { (e.target as HTMLImageElement).style.visibility = "hidden"; }}
-                />
-              ) : (
-                <div className="w-10 h-10 rounded bg-aldi-bg shrink-0" />
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium line-clamp-2">{p.name}</div>
-                <div className="text-xs text-aldi-text-muted mt-0.5">
-                  {p.brand}{p.sellingSize ? ` · ${p.sellingSize}` : ""}
-                </div>
-              </div>
-              <button
-                ref={hapticRef}
-                onClick={() => onPick(p)}
-                disabled={adding}
-                className="px-3 py-1.5 rounded-full bg-aldi-blue text-white text-xs font-semibold hover:bg-aldi-blue-dark active:scale-95 transition disabled:opacity-50"
-              >
-                {adding ? "…" : "Use"}
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : manualSearch.trim().length > 0 ? (
-        <div className="text-sm text-aldi-text-muted py-3 text-center">{emptyHint}</div>
-      ) : null}
+      <div className="relative w-full sm:max-w-lg max-h-[85vh] sm:max-h-[80vh] bg-white sm:rounded-2xl rounded-t-2xl shadow-xl flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-aldi-border shrink-0">
+          <h2 className="text-sm font-semibold text-aldi-text">{title}</h2>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-full bg-aldi-bg text-aldi-text-muted flex items-center justify-center hover:bg-aldi-border transition"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="p-3 border-b border-aldi-border shrink-0">
+          <input
+            ref={inputRef}
+            type="search"
+            value={manualSearch}
+            onChange={(e) => {
+              const v = e.target.value;
+              setManualSearch(v);
+              runManualSearch(v);
+            }}
+            placeholder="Search Aldi products…"
+            className="w-full px-3 py-2 rounded-lg bg-aldi-bg border border-aldi-border focus:border-aldi-blue focus:ring-2 focus:ring-aldi-blue/20 outline-none transition"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto overscroll-contain">
+          {searching ? (
+            <div className="text-sm text-aldi-text-muted py-6 text-center">Searching…</div>
+          ) : manualResults.length > 0 ? (
+            <ul className="divide-y divide-aldi-border">
+              {manualResults.map((p) => (
+                <li key={p.sku} className="flex items-center gap-3 p-3">
+                  {p.image ? (
+                    <img
+                      src={p.image}
+                      alt=""
+                      className="w-10 h-10 object-contain rounded bg-aldi-bg shrink-0"
+                      loading="lazy"
+                      onError={(e) => { (e.target as HTMLImageElement).style.visibility = "hidden"; }}
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded bg-aldi-bg shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium line-clamp-2">{p.name}</div>
+                    <div className="text-xs text-aldi-text-muted mt-0.5">
+                      {p.brand}{p.sellingSize ? ` · ${p.sellingSize}` : ""}
+                    </div>
+                  </div>
+                  <button
+                    ref={hapticRef}
+                    onClick={() => onPick(p)}
+                    disabled={adding}
+                    className="px-3 py-1.5 rounded-full bg-aldi-blue text-white text-xs font-semibold hover:bg-aldi-blue-dark active:scale-95 transition disabled:opacity-50"
+                  >
+                    {adding ? "…" : "Use"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : manualSearch.trim().length > 0 ? (
+            <div className="text-sm text-aldi-text-muted py-6 text-center">{emptyHint}</div>
+          ) : (
+            <div className="text-sm text-aldi-text-muted py-6 text-center">
+              Start typing to search the catalogue.
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
