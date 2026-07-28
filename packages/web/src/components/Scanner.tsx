@@ -1072,25 +1072,80 @@ function ProductSearchPanel({
   hapticRef,
 }: ProductSearchPanelProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Keep the latest onClose without re-running the mount effect. That effect
+  // locks body scroll, so re-running it on every render would flicker and
+  // lose the scroll position.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  // Visible rectangle above the on-screen keyboard, from the Visual Viewport
+  // API. Null until first measurement; we fall back to the full screen.
+  const [vv, setVv] = useState<{ height: number; offsetTop: number } | null>(null);
 
-  // Autofocus the search box when the modal opens, and close on Escape.
+  // Autofocus the search box, close on Escape, lock background scroll, and
+  // track the visual viewport so the modal fits above the iOS keyboard
+  // instead of the whole page being pushed up when the keyboard appears.
   useEffect(() => {
     inputRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+
+    // iOS-safe body scroll lock. `position: fixed` on <body> (with the scroll
+    // offset preserved in `top`) is the reliable way to stop iOS Safari from
+    // scrolling the page behind a modal when an input is focused.
+    const { body, documentElement: html } = document;
+    const scrollY = window.scrollY;
+    const prev = {
+      position: body.style.position,
+      top: body.style.top,
+      width: body.style.width,
+      bodyOverflow: body.style.overflow,
+      htmlOverflow: html.style.overflow,
+    };
+    body.style.position = "fixed";
+    body.style.top = `-${scrollY}px`;
+    body.style.width = "100%";
+    body.style.overflow = "hidden";
+    html.style.overflow = "hidden";
+
+    // Size the modal to the visible area; this shrinks as the keyboard opens.
+    const viewport = window.visualViewport;
+    const update = () => {
+      if (!viewport) return;
+      setVv({ height: viewport.height, offsetTop: viewport.offsetTop });
+    };
+    update();
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      body.style.position = prev.position;
+      body.style.top = prev.top;
+      body.style.width = prev.width;
+      body.style.overflow = prev.bodyOverflow;
+      html.style.overflow = prev.htmlOverflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
+    <div
+      className="fixed inset-x-0 z-50 flex items-end sm:items-center justify-center"
+      style={{
+        top: vv?.offsetTop ?? 0,
+        height: vv ? vv.height : "100%",
+      }}
+    >
       <div
         className="absolute inset-0 bg-black/50"
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative w-full sm:max-w-lg max-h-[85vh] sm:max-h-[80vh] bg-white sm:rounded-2xl rounded-t-2xl shadow-xl flex flex-col overflow-hidden">
+      <div className="relative w-full sm:max-w-lg max-h-full sm:max-h-[80vh] bg-white sm:rounded-2xl rounded-t-2xl shadow-xl flex flex-col overflow-hidden">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-aldi-border shrink-0">
           <h2 className="text-sm font-semibold text-aldi-text">{title}</h2>
           <button
