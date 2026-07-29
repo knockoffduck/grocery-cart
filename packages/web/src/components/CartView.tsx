@@ -216,8 +216,8 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
   const fmt = (cents: number | null) => cents == null ? "—" : `$${(cents / 100).toFixed(2)}`;
 
   return (
-    <div className="flex-1 flex flex-col relative">
-      <div className="px-4 py-3 bg-white border-b border-aldi-border">
+    <div className="flex-1 min-h-0 flex flex-col relative">
+      <div className="px-4 py-3 bg-white border-b border-aldi-border shrink-0">
         <div className="flex items-center justify-between">
           <div>
             <span className="text-xs font-medium text-aldi-text-muted uppercase tracking-wide">
@@ -284,7 +284,7 @@ export function CartView({ cartId, refreshKey, onChange, onCountChange }: CartVi
           <p>Scan a barcode or search the catalogue to start.</p>
         </div>
       ) : (
-        <ul className="flex-1 divide-y divide-aldi-border bg-white">
+        <ul className="flex-1 min-h-0 overflow-y-auto overscroll-contain divide-y divide-aldi-border bg-white">
           {items.map((it, idx) => {
             const open = expandedSku === it.aldi_sku;
             return (

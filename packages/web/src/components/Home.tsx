@@ -80,8 +80,10 @@ export function Home() {
   const bump = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   return (
-    <>
-      <header className="bg-aldi-blue text-white safe-top shadow-md">
+    // h-dvh + overflow-hidden: the shell is pinned to the viewport and only
+    // inner regions scroll, so the iOS keyboard can't push the page around.
+    <div className="h-dvh flex flex-col overflow-hidden">
+      <header className="bg-aldi-blue text-white safe-top shadow-md shrink-0">
         <div className="max-w-2xl mx-auto px-4 py-3 flex items-baseline justify-between gap-3">
           <div className="flex items-baseline gap-2 min-w-0">
             <span className="font-black text-2xl tracking-tight">ALDI</span>
@@ -106,15 +108,15 @@ export function Home() {
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col max-w-2xl w-full mx-auto pb-24">
+      <main className="flex-1 min-h-0 flex flex-col max-w-2xl w-full mx-auto pb-24 overflow-hidden">
         <SyncBanner />
         {screen === "cart" && (
-          <div key="cart" className="screen-enter flex-1 flex flex-col">
+          <div key="cart" className="screen-enter flex-1 min-h-0 flex flex-col">
             <CartView cartId={cartId} refreshKey={refreshKey} onChange={bump} onCountChange={setCartCount} />
           </div>
         )}
         {screen === "scan" && (
-          <div key="scan" className="screen-enter flex-1 flex flex-col">
+          <div key="scan" className="screen-enter flex-1 min-h-0 flex flex-col">
             <Suspense
               fallback={
                 <div className="flex-1 flex items-center justify-center bg-black text-white/60 text-sm">
@@ -134,13 +136,13 @@ export function Home() {
           </div>
         )}
         {screen === "search" && (
-          <div key="search" className="screen-enter flex-1 flex flex-col">
+          <div key="search" className="screen-enter flex-1 min-h-0 flex flex-col">
             <SearchView cartId={cartId} onAdded={() => { bump(); setScreen("cart"); }} />
           </div>
         )}
       </main>
 
       <NavBar current={screen} onChange={setScreen} cartCount={cartCount} />
-    </>
+    </div>
   );
 }

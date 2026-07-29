@@ -91,7 +91,7 @@ export function SearchView({ cartId, onAdded }: SearchViewProps) {
   }
 
   return (
-    <div className="flex-1 flex flex-col">
+    <div className="flex-1 min-h-0 flex flex-col">
       <div className="p-3 bg-white border-b border-aldi-border sticky top-0 z-10">
         <div className="relative">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-aldi-text-muted">

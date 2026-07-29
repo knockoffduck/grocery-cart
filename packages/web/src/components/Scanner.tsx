@@ -702,7 +702,7 @@ export function Scanner({ cartId, onScanned, onCancel }: ScannerProps) {
   })();
 
   return (
-    <div className="flex-1 flex flex-col">
+    <div className="flex-1 min-h-0 flex flex-col">
       <div
         ref={containerRef}
         onClick={onVideoClick}
@@ -1079,11 +1079,13 @@ function ProductSearchPanel({
 
   // --- Swipe-to-dismiss state ---
   const sheetRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const backdropRef = useRef<HTMLDivElement | null>(null);
   const dragState = useRef<{
     startY: number;
     startTime: number;
     dragging: boolean;
+    canDrag: boolean;
     lastY: number;
     lastTime: number;
     velocity: number;
@@ -1095,11 +1097,17 @@ function ProductSearchPanel({
 
   function onSheetTouchStart(e: React.TouchEvent) {
     if (closing) return;
+    // Native-sheet behavior: a downward pull only drags the sheet when it
+    // starts on the handle/header, or when the results list is already
+    // scrolled to the very top. Otherwise the gesture belongs to the list.
+    const scroller = scrollRef.current;
+    const startedOnScroller = !!scroller && scroller.contains(e.target as Node);
     const t = e.touches[0];
     dragState.current = {
       startY: t.clientY,
       startTime: Date.now(),
       dragging: true,
+      canDrag: !startedOnScroller || (scroller?.scrollTop ?? 0) <= 0,
       lastY: t.clientY,
       lastTime: Date.now(),
       velocity: 0,
@@ -1108,7 +1116,7 @@ function ProductSearchPanel({
 
   function onSheetTouchMove(e: React.TouchEvent) {
     const ds = dragState.current;
-    if (!ds?.dragging) return;
+    if (!ds?.dragging || !ds.canDrag) return;
     const t = e.touches[0];
     const now = Date.now();
     const dt = now - ds.lastTime;
@@ -1122,6 +1130,10 @@ function ProductSearchPanel({
   function onSheetTouchEnd() {
     const ds = dragState.current;
     if (!ds?.dragging) return;
+    if (!ds.canDrag) {
+      dragState.current = null;
+      return;
+    }
     ds.dragging = false;
     const shouldClose = dragY > CLOSE_THRESHOLD || ds.velocity > VELOCITY_THRESHOLD;
     if (shouldClose) {
@@ -1158,10 +1170,21 @@ function ProductSearchPanel({
     body.style.overflow = "hidden";
     html.style.overflow = "hidden";
 
+    // Track the visual viewport so the sheet stays glued above the iOS
+    // keyboard. Updates are coalesced through rAF: Safari fires a stream of
+    // resize/scroll events during the keyboard animation, and rendering per
+    // event makes the sheet stutter.
     const viewport = window.visualViewport;
+    let raf = 0;
     const update = () => {
-      if (!viewport) return;
-      setVv({ height: viewport.height, offsetTop: viewport.offsetTop });
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (!viewport) return;
+        setVv({
+          height: Math.round(viewport.height),
+          offsetTop: Math.round(viewport.offsetTop),
+        });
+      });
     };
     update();
     viewport?.addEventListener("resize", update);
@@ -1169,6 +1192,7 @@ function ProductSearchPanel({
 
     return () => {
       window.removeEventListener("keydown", onKey);
+      cancelAnimationFrame(raf);
       viewport?.removeEventListener("resize", update);
       viewport?.removeEventListener("scroll", update);
       body.style.position = prev.position;
@@ -1179,6 +1203,12 @@ function ProductSearchPanel({
       window.scrollTo(0, scrollY);
     };
   }, []);
+
+  // Keyboard-open heuristic: the visual viewport shrinks far below the
+  // layout viewport only when the on-screen keyboard is up (Safari toolbar
+  // show/hide moves both together). Used to drop the home-indicator padding
+  // so the sheet docks flush against the keyboard.
+  const keyboardOpen = vv != null && vv.height < window.innerHeight - 120;
 
   // Compute backdrop opacity from drag distance (1 → 0 as user drags down).
   const backdropOpacity = Math.max(0, 1 - dragY / 300);
@@ -1204,10 +1234,13 @@ function ProductSearchPanel({
         onTouchMove={onSheetTouchMove}
         onTouchEnd={onSheetTouchEnd}
         onTouchCancel={onSheetTouchEnd}
-        className="relative w-full sm:max-w-lg h-[70vh] sm:h-auto sm:max-h-[80vh] bg-white sm:rounded-2xl rounded-t-2xl shadow-xl flex flex-col overflow-hidden"
+        className="relative w-full sm:max-w-lg h-[min(70vh,100%)] max-h-full sm:h-auto sm:max-h-[80vh] bg-white sm:rounded-2xl rounded-t-2xl shadow-xl flex flex-col overflow-hidden"
         style={{
           transform: dragY > 0 ? `translateY(${dragY}px)` : undefined,
           transition: dragState.current?.dragging ? "none" : "transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)",
+          // Clear of the home indicator when docked at the bottom; flush
+          // against the keyboard when it's open.
+          paddingBottom: keyboardOpen ? 0 : "env(safe-area-inset-bottom)",
         }}
       >
         {/* Drag handle — visible on touch devices */}
@@ -1245,7 +1278,7 @@ function ProductSearchPanel({
           />
         </div>
 
-        <div className="flex-1 overflow-y-auto overscroll-contain min-h-0">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto overscroll-contain min-h-0">
           {searching ? (
             <div className="text-sm text-aldi-text-muted py-6 text-center">Searching…</div>
           ) : manualResults.length > 0 ? (
