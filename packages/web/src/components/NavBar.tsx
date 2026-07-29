@@ -1,3 +1,6 @@
+import { ScanLine, Search, ShoppingCart } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
 import { useHaptic } from "@/lib/haptics";
 
 type Tab = "cart" | "scan" | "search";
@@ -26,13 +29,7 @@ export function NavBar({ current, onChange, cartCount = 0 }: NavBarProps) {
           }
           aria-label="Scan barcode"
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6">
-            <path d="M3 7V5a2 2 0 0 1 2-2h2" />
-            <path d="M17 3h2a2 2 0 0 1 2 2v2" />
-            <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
-            <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
-            <line x1="7" y1="12" x2="17" y2="12" />
-          </svg>
+          <ScanLine className="w-6 h-6" strokeWidth={2.2} />
         </button>
 
         <div className="flex bg-white border-t border-aldi-border shadow-[0_-2px_12px_rgba(15,23,42,0.06)]">
@@ -42,13 +39,7 @@ export function NavBar({ current, onChange, cartCount = 0 }: NavBarProps) {
             label="Cart"
             onClick={() => onChange("cart")}
             badge={cartCount > 0 ? cartCount : undefined}
-            icon={
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6">
-                <circle cx="9" cy="21" r="1" />
-                <circle cx="20" cy="21" r="1" />
-                <path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6" />
-              </svg>
-            }
+            icon={<ShoppingCart className="w-6 h-6" />}
           />
 
           {/* Spacer for the elevated scan button */}
@@ -59,12 +50,7 @@ export function NavBar({ current, onChange, cartCount = 0 }: NavBarProps) {
             active={current === "search"}
             label="Search"
             onClick={() => onChange("search")}
-            icon={
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-            }
+            icon={<Search className="w-6 h-6" />}
           />
         </div>
       </div>
@@ -109,12 +95,12 @@ function TabButton({
       <span className="relative">
         {icon}
         {badge != null && badge > 0 && (
-          <span
+          <Badge
             key={badge}
-            className="badge-pop absolute -top-1.5 -right-2.5 min-w-[18px] h-[18px] px-1 rounded-full bg-aldi-orange text-white text-[10px] font-bold leading-[18px] text-center"
+            className="badge-pop absolute -top-1.5 -right-2.5 min-w-[18px] h-[18px] rounded-full bg-aldi-orange px-1 text-[10px] font-bold leading-[18px] text-white"
           >
             {badge > 99 ? "99+" : badge}
-          </span>
+          </Badge>
         )}
       </span>
       <span>{label}</span>

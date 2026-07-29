@@ -1,4 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
+import { RefreshCw } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 import { isCacheStale, syncFromServer, getCachedStatus, type CatalogueStatus } from "@/lib/catalogue";
 
 type State = "checking" | "missing" | "stale" | "syncing" | "fresh" | "error" | "offline";
@@ -111,12 +114,10 @@ export function SyncBanner() {
   return (
     <div className="bg-aldi-orange/10 border-b border-aldi-orange/30 px-4 py-2 flex items-center justify-between gap-2">
       <p className="text-xs text-aldi-text flex-1">{message}</p>
-      <button
-        onClick={runSync}
-        className="px-3 py-1 rounded-full bg-aldi-blue text-white text-xs font-semibold hover:bg-aldi-blue-dark active:scale-95 transition"
-      >
+      <Button size="sm" className="rounded-full" onClick={runSync}>
+        <RefreshCw />
         Sync now
-      </button>
+      </Button>
     </div>
   );
 }

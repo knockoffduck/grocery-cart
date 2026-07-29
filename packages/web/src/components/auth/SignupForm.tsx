@@ -1,5 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { api } from '@/lib/api';
 
 interface FormErrors {
@@ -42,8 +47,8 @@ export function SignupForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="bg-white border border-aldi-border rounded-2xl p-6 space-y-4 shadow-sm">
-      <div>
+    <Card className="gap-4 p-6">
+      <CardHeader className="px-0">
         <h1 className="text-xl font-semibold text-aldi-text">Create account</h1>
         <p className="text-sm text-aldi-text-muted mt-1">
           Already have one?{' '}
@@ -51,79 +56,72 @@ export function SignupForm() {
             Sign in
           </Link>
         </p>
-      </div>
+      </CardHeader>
 
-      <div>
-        <label htmlFor="email" className="block text-sm font-medium text-aldi-text mb-1">
-          Email
-        </label>
-        <input
-          id="email"
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          autoComplete="email"
-          required
-          className="w-full border border-aldi-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-aldi-blue/40"
-        />
-        {errors.email && (
-          <p className="text-xs text-red-600 mt-1">{errors.email[0]}</p>
+      <CardContent className="space-y-4 px-0">
+        <div className="space-y-1.5">
+          <Label htmlFor="email">Email</Label>
+          <Input
+            id="email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            required
+            aria-invalid={!!errors.email}
+          />
+          {errors.email && (
+            <p className="text-xs text-red-600">{errors.email[0]}</p>
+          )}
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="name">
+            Name <span className="text-aldi-text-muted font-normal">(optional)</span>
+          </Label>
+          <Input
+            id="name"
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoComplete="name"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="password">Password</Label>
+          <Input
+            id="password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+            minLength={8}
+            aria-invalid={!!errors.password}
+          />
+          {errors.password && (
+            <ul className="text-xs text-red-600 space-y-0.5">
+              {errors.password.map((err, i) => (
+                <li key={i}>- {err}</li>
+              ))}
+            </ul>
+          )}
+          {!errors.password && (
+            <p className="text-xs text-aldi-text-muted">At least 8 characters.</p>
+          )}
+        </div>
+
+        {message && (
+          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            {message}
+          </p>
         )}
-      </div>
 
-      <div>
-        <label htmlFor="name" className="block text-sm font-medium text-aldi-text mb-1">
-          Name <span className="text-aldi-text-muted font-normal">(optional)</span>
-        </label>
-        <input
-          id="name"
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          autoComplete="name"
-          className="w-full border border-aldi-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-aldi-blue/40"
-        />
-      </div>
-
-      <div>
-        <label htmlFor="password" className="block text-sm font-medium text-aldi-text mb-1">
-          Password
-        </label>
-        <input
-          id="password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoComplete="new-password"
-          required
-          minLength={8}
-          className="w-full border border-aldi-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-aldi-blue/40"
-        />
-        {errors.password && (
-          <ul className="text-xs text-red-600 mt-1 space-y-0.5">
-            {errors.password.map((err, i) => (
-              <li key={i}>- {err}</li>
-            ))}
-          </ul>
-        )}
-        {!errors.password && (
-          <p className="text-xs text-aldi-text-muted mt-1">At least 8 characters.</p>
-        )}
-      </div>
-
-      {message && (
-        <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-          {message}
-        </p>
-      )}
-
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full bg-aldi-blue text-white rounded-lg py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
-      >
-        {pending ? 'Creating account…' : 'Create account'}
-      </button>
-    </form>
+        <Button type="submit" disabled={pending} className="w-full">
+          {pending ? 'Creating account…' : 'Create account'}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }

@@ -1,5 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { api } from '@/lib/api';
 
 interface FormErrors {
@@ -41,8 +46,8 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="bg-white border border-aldi-border rounded-2xl p-6 space-y-4 shadow-sm">
-      <div>
+    <Card className="gap-4 p-6">
+      <CardHeader className="px-0">
         <h1 className="text-xl font-semibold text-aldi-text">Sign in</h1>
         <p className="text-sm text-aldi-text-muted mt-1">
           New here?{' '}
@@ -50,57 +55,51 @@ export function LoginForm() {
             Create an account
           </Link>
         </p>
-      </div>
+      </CardHeader>
 
-      <div>
-        <label htmlFor="email" className="block text-sm font-medium text-aldi-text mb-1">
-          Email
-        </label>
-        <input
-          id="email"
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          autoComplete="email"
-          required
-          className="w-full border border-aldi-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-aldi-blue/40"
-        />
-        {errors.email && (
-          <p className="text-xs text-red-600 mt-1">{errors.email[0]}</p>
+      <CardContent className="space-y-4 px-0">
+        <div className="space-y-1.5">
+          <Label htmlFor="email">Email</Label>
+          <Input
+            id="email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            required
+            aria-invalid={!!errors.email}
+          />
+          {errors.email && (
+            <p className="text-xs text-red-600">{errors.email[0]}</p>
+          )}
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="password">Password</Label>
+          <Input
+            id="password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+            aria-invalid={!!errors.password}
+          />
+          {errors.password && (
+            <p className="text-xs text-red-600">{errors.password[0]}</p>
+          )}
+        </div>
+
+        {message && (
+          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            {message}
+          </p>
         )}
-      </div>
 
-      <div>
-        <label htmlFor="password" className="block text-sm font-medium text-aldi-text mb-1">
-          Password
-        </label>
-        <input
-          id="password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoComplete="current-password"
-          required
-          className="w-full border border-aldi-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-aldi-blue/40"
-        />
-        {errors.password && (
-          <p className="text-xs text-red-600 mt-1">{errors.password[0]}</p>
-        )}
-      </div>
-
-      {message && (
-        <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-          {message}
-        </p>
-      )}
-
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full bg-aldi-blue text-white rounded-lg py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
-      >
-        {pending ? 'Signing in…' : 'Sign in'}
-      </button>
-    </form>
+        <Button type="submit" disabled={pending} className="w-full">
+          {pending ? 'Signing in…' : 'Sign in'}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }

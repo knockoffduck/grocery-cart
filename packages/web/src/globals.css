@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 @config "../tailwind.config.js";
 
 /* Aldi brand: deep blue + orange + white */
@@ -15,9 +16,36 @@
   --color-aldi-border: #e2e8f0;
   --color-aldi-success: #16a34a;
   --color-aldi-danger: #dc2626;
+
+  /* shadcn/ui design tokens, mapped onto the Aldi palette so every
+     primitive (Button, Dialog, Input, …) renders on-brand by default. */
+  --color-background: var(--color-aldi-bg);
+  --color-foreground: var(--color-aldi-text);
+  --color-card: var(--color-aldi-surface);
+  --color-card-foreground: var(--color-aldi-text);
+  --color-popover: var(--color-aldi-surface);
+  --color-popover-foreground: var(--color-aldi-text);
+  --color-primary: var(--color-aldi-blue);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--color-aldi-bg);
+  --color-secondary-foreground: var(--color-aldi-text);
+  --color-muted: var(--color-aldi-bg);
+  --color-muted-foreground: var(--color-aldi-text-muted);
+  --color-accent: var(--color-aldi-bg);
+  --color-accent-foreground: var(--color-aldi-text);
+  --color-destructive: var(--color-aldi-danger);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--color-aldi-border);
+  --color-input: var(--color-aldi-border);
+  --color-ring: var(--color-aldi-blue);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
 :root {
+  --radius: 0.625rem;
   --background: var(--color-aldi-bg);
   --foreground: var(--color-aldi-text);
 }
