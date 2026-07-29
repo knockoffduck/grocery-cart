@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { BarcodeScanner as ZBarScanner, type ScanResult as ZBarResult } from "web-wasm-barcode-reader";
 import type { IScannerControls } from "@zxing/browser";
 import { BrowserMultiFormatReader, BarcodeFormat, DecodeHintType, type Result, type Exception } from "@zxing/library";
@@ -1132,9 +1133,9 @@ function ProductSearchPanel({
     };
   }, []);
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-x-0 z-50 flex items-end sm:items-center justify-center"
+      className="fixed inset-x-0 z-[60] flex items-end sm:items-center justify-center"
       style={{
         top: vv?.offsetTop ?? 0,
         height: vv ? vv.height : "100%",
@@ -1220,6 +1221,7 @@ function ProductSearchPanel({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
