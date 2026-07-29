@@ -1073,18 +1073,69 @@ function ProductSearchPanel({
   hapticRef,
 }: ProductSearchPanelProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  // Keep the latest onClose without re-running the mount effect. That effect
-  // locks body scroll, so re-running it on every render would flicker and
-  // lose the scroll position.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  // Visible rectangle above the on-screen keyboard, from the Visual Viewport
-  // API. Null until first measurement; we fall back to the full screen.
   const [vv, setVv] = useState<{ height: number; offsetTop: number } | null>(null);
 
-  // Autofocus the search box, close on Escape, lock background scroll, and
-  // track the visual viewport so the modal fits above the iOS keyboard
-  // instead of the whole page being pushed up when the keyboard appears.
+  // --- Swipe-to-dismiss state ---
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
+  const dragState = useRef<{
+    startY: number;
+    startTime: number;
+    dragging: boolean;
+    lastY: number;
+    lastTime: number;
+    velocity: number;
+  } | null>(null);
+  const [dragY, setDragY] = useState(0);
+  const [closing, setClosing] = useState(false);
+  const CLOSE_THRESHOLD = 120; // px
+  const VELOCITY_THRESHOLD = 0.6; // px/ms
+
+  function onSheetTouchStart(e: React.TouchEvent) {
+    if (closing) return;
+    const t = e.touches[0];
+    dragState.current = {
+      startY: t.clientY,
+      startTime: Date.now(),
+      dragging: true,
+      lastY: t.clientY,
+      lastTime: Date.now(),
+      velocity: 0,
+    };
+  }
+
+  function onSheetTouchMove(e: React.TouchEvent) {
+    const ds = dragState.current;
+    if (!ds?.dragging) return;
+    const t = e.touches[0];
+    const now = Date.now();
+    const dt = now - ds.lastTime;
+    if (dt > 0) ds.velocity = (t.clientY - ds.lastY) / dt;
+    ds.lastY = t.clientY;
+    ds.lastTime = now;
+    const delta = Math.max(0, t.clientY - ds.startY); // only allow downward
+    setDragY(delta);
+  }
+
+  function onSheetTouchEnd() {
+    const ds = dragState.current;
+    if (!ds?.dragging) return;
+    ds.dragging = false;
+    const shouldClose = dragY > CLOSE_THRESHOLD || ds.velocity > VELOCITY_THRESHOLD;
+    if (shouldClose) {
+      setClosing(true);
+      // Animate the sheet off-screen then call onClose after transition
+      setDragY(window.innerHeight);
+      setTimeout(() => onCloseRef.current(), 280);
+    } else {
+      setDragY(0);
+    }
+    dragState.current = null;
+  }
+
+  // Autofocus, Escape, body scroll lock, visual viewport tracking.
   useEffect(() => {
     inputRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
@@ -1092,9 +1143,6 @@ function ProductSearchPanel({
     };
     window.addEventListener("keydown", onKey);
 
-    // iOS-safe body scroll lock. `position: fixed` on <body> (with the scroll
-    // offset preserved in `top`) is the reliable way to stop iOS Safari from
-    // scrolling the page behind a modal when an input is focused.
     const { body, documentElement: html } = document;
     const scrollY = window.scrollY;
     const prev = {
@@ -1110,7 +1158,6 @@ function ProductSearchPanel({
     body.style.overflow = "hidden";
     html.style.overflow = "hidden";
 
-    // Size the modal to the visible area; this shrinks as the keyboard opens.
     const viewport = window.visualViewport;
     const update = () => {
       if (!viewport) return;
@@ -1133,6 +1180,9 @@ function ProductSearchPanel({
     };
   }, []);
 
+  // Compute backdrop opacity from drag distance (1 → 0 as user drags down).
+  const backdropOpacity = Math.max(0, 1 - dragY / 300);
+
   return createPortal(
     <div
       className="fixed inset-x-0 z-[60] flex items-end sm:items-center justify-center"
@@ -1142,11 +1192,29 @@ function ProductSearchPanel({
       }}
     >
       <div
+        ref={backdropRef}
         className="absolute inset-0 bg-black/50"
+        style={{ opacity: backdropOpacity }}
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative w-full sm:max-w-lg max-h-full sm:max-h-[80vh] bg-white sm:rounded-2xl rounded-t-2xl shadow-xl flex flex-col overflow-hidden">
+      <div
+        ref={sheetRef}
+        onTouchStart={onSheetTouchStart}
+        onTouchMove={onSheetTouchMove}
+        onTouchEnd={onSheetTouchEnd}
+        onTouchCancel={onSheetTouchEnd}
+        className="relative w-full sm:max-w-lg h-[70vh] sm:h-auto sm:max-h-[80vh] bg-white sm:rounded-2xl rounded-t-2xl shadow-xl flex flex-col overflow-hidden"
+        style={{
+          transform: dragY > 0 ? `translateY(${dragY}px)` : undefined,
+          transition: dragState.current?.dragging ? "none" : "transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)",
+        }}
+      >
+        {/* Drag handle — visible on touch devices */}
+        <div className="flex justify-center pt-2 pb-1 sm:hidden shrink-0 cursor-grab active:cursor-grabbing">
+          <div className="w-9 h-1 rounded-full bg-aldi-border" />
+        </div>
+
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-aldi-border shrink-0">
           <h2 className="text-sm font-semibold text-aldi-text">{title}</h2>
           <button
@@ -1177,7 +1245,7 @@ function ProductSearchPanel({
           />
         </div>
 
-        <div className="flex-1 overflow-y-auto overscroll-contain">
+        <div className="flex-1 overflow-y-auto overscroll-contain min-h-0">
           {searching ? (
             <div className="text-sm text-aldi-text-muted py-6 text-center">Searching…</div>
           ) : manualResults.length > 0 ? (
