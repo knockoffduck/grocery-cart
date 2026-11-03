@@ -1,4 +1,4 @@
-FROM oven/bun:1 AS build
+FROM oven/bun:1.4.4 AS build
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/shared/package.json packages/shared/
@@ -15,7 +15,7 @@ COPY packages/web/ packages/web/
 RUN cp packages/web/node_modules/web-wasm-barcode-reader/dist/a.out.js packages/web/node_modules/web-wasm-barcode-reader/dist/a.out.wasm packages/web/public/
 RUN cd packages/web && bun run build
 
-FROM nginx:alpine
+FROM nginx:1.31.7-alpine
 COPY --from=build /app/packages/web/dist /usr/share/nginx/html
 COPY packages/web/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
